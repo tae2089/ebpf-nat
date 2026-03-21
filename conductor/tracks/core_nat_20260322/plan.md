@@ -3,7 +3,7 @@
 이 계획은 TDD(Test-Driven Development) 원칙을 따르며, 각 단계의 마지막에는 검증 프로토콜이 포함됩니다.
 
 ## Phase 1: Project Setup & eBPF Scaffolding
-- [x] Task: Initialize Go module and eBPF build pipeline (263c938)
+- [x] Task: Initialize Go module and eBPF build pipeline (f827845)
     - [ ] `go mod init` 및 `ebpf-go` 종속성 추가
     - [ ] eBPF C 코드 컴파일을 위한 `Makefile` 작성
 - [ ] Task: Create basic eBPF TC program (Skeleton)
