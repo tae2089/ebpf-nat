@@ -10,5 +10,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [ ] **Track: Session Management (Aging and Cleanup)**
+- [x] **Track: Session Management (Aging and Cleanup)**
 *Link: [./tracks/session_aging_20260322/](./tracks/session_aging_20260322/)*

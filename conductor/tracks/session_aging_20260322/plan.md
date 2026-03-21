@@ -8,10 +8,10 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
 
 ## Phase 2: Configuration & Integration
-- [ ] Task: Add GC interval and timeout settings (TCP/UDP) to `internal/config/config.go`.
-- [ ] Task: Update `Manager.RunBackgroundTasks` in `internal/nat/manager.go` to include the GC loop.
-- [ ] Task: Add a CLI flag to override the GC interval in `main.go`.
-- [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
+- [x] Task: Add GC interval and timeout settings (TCP/UDP) to `internal/config/config.go`. [7b2f533]
+- [x] Task: Update `Manager.RunBackgroundTasks` in `internal/nat/manager.go` to include the GC loop. [7b2f533]
+- [x] Task: Add a CLI flag to override the GC interval in `main.go`. [7b2f533]
+- [x] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md) [7b2f533]
 
 ---
 
