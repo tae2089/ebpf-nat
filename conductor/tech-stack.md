@@ -6,6 +6,7 @@
 
 ## 2. Frameworks & Libraries
 - **Networking:** `cilium/ebpf` (ebpf-go) - Go 기반의 현대적인 eBPF 로더 및 관리 라이브러리.
+- **Environment Detection:** AWS IMDSv2, GCP Metadata Server, 및 `icanhazip.com` 등 외부 API를 활용한 환경 감지 및 Public IP 탐지.
 - **Error Handling:** 
   - **slog:** Go 표준 라이브러리의 구조화된 로깅 패키지.
   - **github.com/tae2089/trace:** 에러 트래킹 및 트레이싱을 위한 외부 라이브러리 활용.

@@ -20,6 +20,7 @@ ebpf-go를 통해 tc 기반의 nat 솔루션 개발
 
 ## 4. Key Features
 - **SNAT (Source NAT):** 내부 네트워크 기기들이 하나의 외부 IP를 공유하여 외부로 나갈 수 있게 하는 주소 변환(Masquerading 포함).
+- **Automatic Public IP Detection:** AWS, GCP 등 클라우드 환경이나 일반 네트워크에서 외부로 나가는 Public IP를 자동으로 감지하여 별도의 설정 없이 Masquerading을 수행합니다.
 - **DNAT (Destination NAT):** 외부로부터 들어오는 트래픽을 특정 내부 IP/포트로 전달하는 기능(포트 포워딩).
 - **Connection Tracking (Conntrack):** eBPF 맵을 사용하여 실시간 연결 세션을 추적하고, 세션 만료 및 재사용을 효율적으로 관리합니다.
 
