@@ -75,3 +75,58 @@ func TestAddSNATRule(t *testing.T) {
 		t.Errorf("Expected translated port %v, got %v", htons(transPort), entry.TranslatedPort)
 	}
 }
+
+func TestAddDNATRule(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ebpf.NewMap(spec.Maps["dnat_rules"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			DnatRules: m,
+		},
+	}
+
+	mgr := NewManager(objs)
+
+	srcIP := net.ParseIP("0.0.0.0") // Wildcard or specific
+	dstIP := net.ParseIP("1.2.3.4")
+	srcPort := uint16(0)
+	dstPort := uint16(80)
+	protocol := uint8(syscall.IPPROTO_TCP)
+	transIP := net.ParseIP("192.168.1.100")
+	transPort := uint16(8080)
+
+	err = mgr.AddDNATRule(srcIP, dstIP, srcPort, dstPort, protocol, transIP, transPort)
+	if err != nil {
+		t.Errorf("AddDNATRule failed: %v", err)
+	}
+
+	key := bpf.NatNatKey{
+		SrcIp:    ipToUint32(srcIP),
+		DstIp:    ipToUint32(dstIP),
+		SrcPort:  htons(srcPort),
+		DstPort:  htons(dstPort),
+		Protocol: protocol,
+	}
+
+	var entry bpf.NatNatEntry
+	if err := m.Lookup(key, &entry); err != nil {
+		t.Errorf("Lookup failed: %v", err)
+	}
+
+	if entry.TranslatedIp != ipToUint32(transIP) {
+		t.Errorf("Expected translated IP %v, got %v", ipToUint32(transIP), entry.TranslatedIp)
+	}
+}

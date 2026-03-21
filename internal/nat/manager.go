@@ -1,11 +1,12 @@
 package nat
 
 import (
-	"fmt"
 	"net"
 	"encoding/binary"
+	"syscall"
 
 	"github.com/imtaebin/ebpf-nat/internal/bpf"
+	"github.com/imtaebin/ebpf-nat/internal/config"
 )
 
 type Manager struct {
@@ -14,6 +15,31 @@ type Manager struct {
 
 func NewManager(objs *bpf.NatObjects) *Manager {
 	return &Manager{objects: objs}
+}
+
+func (m *Manager) LoadConfig(cfg *config.Config) error {
+	for _, rule := range cfg.SNAT {
+		proto := parseProtocol(rule.Protocol)
+		if err := m.AddSNATRule(
+			net.ParseIP(rule.SrcIP), net.ParseIP(rule.DstIP),
+			rule.SrcPort, rule.DstPort, proto,
+			net.ParseIP(rule.TransIP), rule.TransPort,
+		); err != nil {
+			return err
+		}
+	}
+
+	for _, rule := range cfg.DNAT {
+		proto := parseProtocol(rule.Protocol)
+		if err := m.AddDNATRule(
+			net.ParseIP(rule.SrcIP), net.ParseIP(rule.DstIP),
+			rule.SrcPort, rule.DstPort, proto,
+			net.ParseIP(rule.TransIP), rule.TransPort,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {
@@ -30,11 +56,35 @@ func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, prot
 		TranslatedPort: htons(transPort),
 	}
 
-	if err := m.objects.ConntrackMap.Update(key, entry, 0); err != nil {
-		return fmt.Errorf("failed to update conntrack map: %w", err)
+	return m.objects.ConntrackMap.Update(key, entry, 0)
+}
+
+func (m *Manager) AddDNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {
+	key := bpf.NatNatKey{
+		SrcIp:    ipToUint32(srcIP),
+		DstIp:    ipToUint32(dstIP),
+		SrcPort:  htons(srcPort),
+		DstPort:  htons(dstPort),
+		Protocol: protocol,
 	}
 
-	return nil
+	entry := bpf.NatNatEntry{
+		TranslatedIp:   ipToUint32(transIP),
+		TranslatedPort: htons(transPort),
+	}
+
+	return m.objects.DnatRules.Update(key, entry, 0)
+}
+
+func parseProtocol(p string) uint8 {
+	switch p {
+	case "tcp", "TCP":
+		return uint8(syscall.IPPROTO_TCP)
+	case "udp", "UDP":
+		return uint8(syscall.IPPROTO_UDP)
+	default:
+		return 0
+	}
 }
 
 func ipToUint32(ip net.IP) uint32 {

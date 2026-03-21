@@ -6,23 +6,30 @@ package main
 import (
 	"flag"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/imtaebin/ebpf-nat/internal/bpf"
+	"github.com/imtaebin/ebpf-nat/internal/config"
 	"github.com/imtaebin/ebpf-nat/internal/nat"
 	"github.com/vishvananda/netlink"
 	"github.com/cilium/ebpf/rlimit"
 )
 
 func main() {
-	ifaceName := flag.String("iface", "", "Network interface name (e.g. eth0)")
+	configPath := flag.String("config", "config.yaml", "Path to configuration file")
 	flag.Parse()
 
-	if *ifaceName == "" {
-		slog.Error("Network interface name is required (-iface)")
+	// Load configuration
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		slog.Error("Failed to load config", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	if cfg.Interface == "" {
+		slog.Error("Network interface name is required in config")
 		os.Exit(1)
 	}
 
@@ -40,27 +47,17 @@ func main() {
 	}
 	defer objs.Close()
 
-	// Initialize NAT Manager
+	// Initialize NAT Manager and load rules
 	natMgr := nat.NewManager(&objs)
-
-	// Add a sample SNAT rule for testing
-	// Example: Packets from 192.168.1.10:12345 to 8.8.8.8:53 (UDP) 
-	// should be translated to 10.0.0.1:54321
-	err := natMgr.AddSNATRule(
-		net.ParseIP("192.168.1.10"), net.ParseIP("8.8.8.8"),
-		12345, 53, syscall.IPPROTO_UDP,
-		net.ParseIP("10.0.0.1"), 54321,
-	)
-	if err != nil {
-		slog.Error("Failed to add test SNAT rule", slog.Any("error", err))
-	} else {
-		slog.Info("Added sample SNAT rule for testing")
+	if err := natMgr.LoadConfig(cfg); err != nil {
+		slog.Error("Failed to load NAT rules from config", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// Find the network interface
-	link, err := netlink.LinkByName(*ifaceName)
+	link, err := netlink.LinkByName(cfg.Interface)
 	if err != nil {
-		slog.Error("Failed to find interface", slog.String("name", *ifaceName), slog.Any("error", err))
+		slog.Error("Failed to find interface", slog.String("name", cfg.Interface), slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -117,7 +114,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("Successfully attached eBPF NAT program to interface (Ingress & Egress)", slog.String("interface", *ifaceName))
+	slog.Info("Successfully started eBPF NAT", slog.String("interface", cfg.Interface))
 
 	// Wait for termination
 	stop := make(chan os.Signal, 1)

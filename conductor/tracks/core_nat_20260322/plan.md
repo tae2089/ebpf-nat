@@ -27,7 +27,7 @@
 ## Phase 3: DNAT & Configuration Support
 - [x] Task: Implement DNAT Logic in C (312caa9)
     - [ ] IPv4 Destination IP/Port 변환 및 포트 포워딩 로직 구현
-- [ ] Task: Implement YAML Configuration Loader
+- [~] Task: Implement YAML Configuration Loader
     - [ ] `slog`와 `trace`를 사용한 안정적인 설정 로더 구현 (YAML 기반)
 - [ ] Task: Write Tests for DNAT & Config
     - [ ] 설정 파일 기반의 포트 포워딩 동작 검증 테스트 작성
