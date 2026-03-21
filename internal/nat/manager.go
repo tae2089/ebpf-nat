@@ -1,16 +1,22 @@
 package nat
 
 import (
-	"net"
+	"context"
 	"encoding/binary"
+	"log/slog"
+	"net"
 	"syscall"
+	"time"
 
 	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/imtaebin/ebpf-nat/internal/config"
+	"github.com/imtaebin/ebpf-nat/internal/ipdetect"
 )
 
 type Manager struct {
-	objects *bpf.NatObjects
+	objects    *bpf.NatObjects
+	ipDetector ipdetect.Detector
+	privateIP  net.IP
 }
 
 func NewManager(objs *bpf.NatObjects) *Manager {
@@ -18,30 +24,49 @@ func NewManager(objs *bpf.NatObjects) *Manager {
 }
 
 func (m *Manager) LoadConfig(cfg *config.Config) error {
-	if cfg.Masquerade {
-		var externalIP net.IP
-		if cfg.ExternalIP != "" {
-			externalIP = net.ParseIP(cfg.ExternalIP)
-		} else {
-			// Find IP of the interface
-			iface, err := net.InterfaceByName(cfg.Interface)
-			if err == nil {
-				addrs, err := iface.Addrs()
-				if err == nil {
-					for _, addr := range addrs {
-						if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-							if ip4 := ipnet.IP.To4(); ip4 != nil {
-								externalIP = ip4
-								break
-							}
-						}
+	// Find private IP of the interface for fallback
+	iface, err := net.InterfaceByName(cfg.Interface)
+	if err == nil {
+		addrs, err := iface.Addrs()
+		if err == nil {
+			for _, addr := range addrs {
+				if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+					if ip4 := ipnet.IP.To4(); ip4 != nil {
+						m.privateIP = ip4
+						break
 					}
 				}
 			}
 		}
-		if externalIP != nil {
-			if err := m.SetSNATConfig(externalIP); err != nil {
+	}
+
+	if cfg.Masquerade {
+		if cfg.ExternalIP != "" {
+			if err := m.SetSNATConfig(net.ParseIP(cfg.ExternalIP)); err != nil {
 				return err
+			}
+		} else {
+			// Initialize IP detector
+			switch cfg.IPDetectType {
+			case "aws":
+				m.ipDetector = ipdetect.NewAWSDetector()
+			case "gcp":
+				m.ipDetector = ipdetect.NewGCPDetector()
+			case "generic":
+				m.ipDetector = ipdetect.NewGenericDetector()
+			case "auto", "":
+				m.ipDetector = ipdetect.NewDefaultAutoDetector()
+			default:
+				slog.Warn("Unknown ip_detect_type, using auto", slog.String("type", cfg.IPDetectType))
+				m.ipDetector = ipdetect.NewDefaultAutoDetector()
+			}
+			
+			// Initial detection
+			if err := m.updatePublicIP(context.Background()); err != nil {
+				slog.Error("Initial public IP detection failed, using private IP", slog.Any("error", err))
+				if m.privateIP != nil {
+					m.SetSNATConfig(m.privateIP)
+				}
 			}
 		}
 	}
@@ -74,7 +99,47 @@ func (m *Manager) SetSNATConfig(externalIP net.IP) error {
 	cfg := bpf.NatSnatConfig{
 		ExternalIp: ipToUint32(externalIP),
 	}
+	slog.Info("Updating SNAT configuration", slog.String("external_ip", externalIP.String()))
 	return m.objects.SnatConfigMap.Update(uint32(0), cfg, 0)
+}
+
+func (m *Manager) updatePublicIP(ctx context.Context) error {
+	if m.ipDetector == nil {
+		return nil
+	}
+
+	ip, err := m.ipDetector.GetPublicIP(ctx)
+	if err != nil {
+		return err
+	}
+
+	return m.SetSNATConfig(ip)
+}
+
+// RunBackgroundTasks starts periodic tasks like IP detection.
+func (m *Manager) RunBackgroundTasks(ctx context.Context, interval time.Duration) {
+	if m.ipDetector == nil {
+		return
+	}
+
+	slog.Info("Starting background IP detection", slog.Duration("interval", interval))
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("Stopping background IP detection")
+			return
+		case <-ticker.C:
+			slog.Debug("Triggering periodic public IP detection")
+			if err := m.updatePublicIP(ctx); err != nil {
+				slog.Error("Periodic public IP detection failed", slog.Any("error", err))
+				// We don't overwrite with private IP here to avoid flapping 
+				// if it was previously successful.
+			}
+		}
+	}
 }
 
 func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {

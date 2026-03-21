@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Interface  string `yaml:"interface"`
-	Masquerade bool   `yaml:"masquerade"`
-	ExternalIP string `yaml:"external_ip,omitempty"`
-	SNAT       []Rule `yaml:"snat"`
-	DNAT       []Rule `yaml:"dnat"`
+	Interface    string `yaml:"interface"`
+	Masquerade   bool   `yaml:"masquerade"`
+	ExternalIP   string `yaml:"external_ip,omitempty"`
+	IPDetectType string `yaml:"ip_detect_type,omitempty"` // generic, aws, gcp, auto
+	SNAT         []Rule `yaml:"snat"`
+	DNAT         []Rule `yaml:"dnat"`
 }
 
 type Rule struct {
