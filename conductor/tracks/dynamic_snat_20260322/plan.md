@@ -16,7 +16,7 @@ Implement a high-performance Dynamic SNAT (Masquerading) solution directly withi
 - **Reverse Map (Optional but Recommended):** While `conntrack_map` handles Original->Reply direction, a fast way to check if a specific *translated* port is currently in use is necessary to avoid collisions during allocation. Alternatively, we can rely on lookup failures on the existing map if the key structure supports it.
 - **State Map:** A map to hold the configuration for SNAT (e.g., the external IP address to use for masquerading).
 
-### Step 2: Implement Port Allocation Logic in eBPF (`bpf/nat.c`)
+### [x] Step 2: Implement Port Allocation Logic in eBPF (`bpf/nat.c`) [67362f1]
 - **Trigger:** When a packet from an internal network (matching SNAT rules/interfaces) needs to go out, and no existing `conntrack_map` entry is found.
 - **Hash-based Starting Point:** Calculate a starting port based on a hash of the 5-tuple (Src IP, Src Port, Dst IP, Dst Port, Protocol) to distribute port usage evenly.
 - **Sequential Search Loop:**
@@ -26,11 +26,11 @@ Implement a high-performance Dynamic SNAT (Masquerading) solution directly withi
 - **Allocation:** If a free port is found, create the new connection tracking entry and update the packet.
 - **Failure Handling:** If the loop exhausts its iterations without finding a port, drop the packet (`TC_ACT_SHOT`) or pass it without translation (depending on policy).
 
-### Step 3: Implement Packet Translation (SNAT & Return DNAT) (`bpf/nat.c`)
+### [x] Step 3: Implement Packet Translation (SNAT & Return DNAT) (`bpf/nat.c`) [67362f1]
 - **Egress (SNAT):** Replace the Source IP with the external IP and Source Port with the newly allocated (or existing) ephemeral port. Update L3/L4 checksums.
 - **Ingress (Return Traffic):** When return traffic arrives, look up the connection in the `conntrack_map` using the Destination Port. Replace Destination IP and Destination Port with the original internal IP and Port. Update checksums.
 
-### Step 4: Control Plane Updates (`internal/config` & `internal/nat`)
+### [x] Step 4: Control Plane Updates (`internal/config` & `internal/nat`) [4db6c2f]
 - Update the Go configuration structs to support a `Masquerade` flag or specific dynamic SNAT rules.
 - Update `manager.go` to push the external interface's IP address into the eBPF configuration map so the kernel knows which IP to use for masquerading.
 
