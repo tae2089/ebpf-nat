@@ -2,7 +2,7 @@
 
 ## Phase 1: Environment Detection & Metadata Clients
 - [x] Task: Implement AWS IMDSv2 client for public IP retrieval. [923a576]
-- [ ] Task: Implement GCP Metadata Server client for public IP retrieval.
+- [x] Task: Implement GCP Metadata Server client for public IP retrieval. [a870423]
 - [ ] Task: Implement Generic HTTP client for external IP retrieval (icanhazip.com).
 - [ ] Task: Implement an 'Auto-Detector' that tries each method in sequence.
 - [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
