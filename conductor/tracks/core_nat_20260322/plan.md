@@ -16,9 +16,9 @@
     - [ ] 세션 상태를 저장할 eBPF Hash/LRU 맵 정의 (C & Go)
 - [x] Task: Implement SNAT Logic in C (b7cbc00)
     - [ ] IPv4 Source IP/Port 변환 및 체크섬 업데이트 로직 구현
-- [~] Task: Implement Connection Tracking in Go
+- [x] Task: Implement Connection Tracking in Go (249e127)
     - [ ] 패킷 흐름에 따른 세션 맵 업데이트 및 관리 로직 구현
-- [ ] Task: Write Tests for SNAT
+- [~] Task: Write Tests for SNAT
     - [ ] 네트워크 네임스페이스를 활용한 가상 환경에서 SNAT 변환 검증 테스트 작성
 - [ ] Task: Implement SNAT to Pass Tests
     - [ ] 위 테스트를 통과하도록 C 및 Go 코드 완성
