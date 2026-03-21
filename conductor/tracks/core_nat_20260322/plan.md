@@ -14,9 +14,9 @@
 ## Phase 2: Connection Tracking & Basic SNAT
 - [x] Task: Implement SNAT eBPF Maps (6a3dc50)
     - [ ] 세션 상태를 저장할 eBPF Hash/LRU 맵 정의 (C & Go)
-- [~] Task: Implement SNAT Logic in C
+- [x] Task: Implement SNAT Logic in C (b7cbc00)
     - [ ] IPv4 Source IP/Port 변환 및 체크섬 업데이트 로직 구현
-- [ ] Task: Implement Connection Tracking in Go
+- [~] Task: Implement Connection Tracking in Go
     - [ ] 패킷 흐름에 따른 세션 맵 업데이트 및 관리 로직 구현
 - [ ] Task: Write Tests for SNAT
     - [ ] 네트워크 네임스페이스를 활용한 가상 환경에서 SNAT 변환 검증 테스트 작성
