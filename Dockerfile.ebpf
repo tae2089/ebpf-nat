@@ -1,0 +1,15 @@
+FROM golang:1.25
+
+RUN apt-get update && apt-get install -y \
+    clang \
+    llvm \
+    libbpf-dev \
+    linux-libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# asm/types.h 등의 누락을 방지하기 위해 심볼릭 링크 생성 (필요한 경우)
+RUN if [ ! -d /usr/include/asm ]; then \
+        ln -s /usr/include/$(uname -m)-linux-gnu/asm /usr/include/asm; \
+    fi
+
+WORKDIR /app

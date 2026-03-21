@@ -1,17 +1,22 @@
 CC=clang
-CFLAGS=-O2 -g -target bpf -Wall -Werror $(EXTRA_CFLAGS)
 BPF_GEN_DIR=internal/bpf
 BPF_SRC=bpf/nat.c
+BUILDER_IMAGE=ebpf-nat-builder
 
-.PHONY: all generate build test clean
+.PHONY: all generate build test clean build-builder
 
 all: generate build
 
-generate:
-	go generate ./...
+build-builder:
+	docker build -t $(BUILDER_IMAGE) -f Dockerfile.ebpf .
+
+generate: build-builder
+	docker run --rm -v $(shell pwd):/app -w /app $(BUILDER_IMAGE) \
+		go generate ./...
 
 build: generate
-	go build -o bin/ebpf-nat main.go
+	GOOS=linux GOARCH=amd64 go build -o bin/ebpf-nat-amd64 main.go
+	GOOS=linux GOARCH=arm64 go build -o bin/ebpf-nat-arm64 main.go
 
 test: generate
 	go test -v ./...

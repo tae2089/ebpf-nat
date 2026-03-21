@@ -21,5 +21,5 @@
 ## 5. Development & Testing
 - **AI-Assisted Development:** `context7` - AI 에이전트가 `cilium/ebpf` 등 주요 라이브러리의 최신 문서를 실시간으로 조회하고 참조하기 위한 스킬 활용.
 - **Toolchain:** `Go Toolchain` (go build, go test) - 표준 Go 개발 도구 활용.
-- **Automation:** `Makefile` 또는 `Magefile` - 빌드, 테스트, 배포 파이프라인 자동화.
+- **Automation:** `Makefile` 또는 `Magefile` - 빌드, 테스트, 배포 파이프라인 자동화 (Dockerized BPF compilation 포함).
 - **Testbed:** `Containerized Networking Testbed` - Docker 또는 네트워크 네임스페이스를 활용한 가상 네트워크 환경에서의 기능 및 성능 테스트 수행.
