@@ -2,14 +2,14 @@
 
 이 계획은 TDD(Test-Driven Development) 원칙을 따르며, 각 단계의 마지막에는 검증 프로토콜이 포함됩니다.
 
-## Phase 1: Project Setup & eBPF Scaffolding
+## Phase 1: Project Setup & eBPF Scaffolding [checkpoint: 6a3dc50]
 - [x] Task: Initialize Go module and eBPF build pipeline (f827845)
-    - [ ] `go mod init` 및 `ebpf-go` 종속성 추가
-    - [ ] eBPF C 코드 컴파일을 위한 `Makefile` 작성
-- [~] Task: Create basic eBPF TC program (Skeleton)
-    - [ ] 패킷을 단순히 통과시키는(TC_ACT_OK) 최소한의 C 프로그램 작성
-    - [ ] Go에서 프로그램을 로드하고 인터페이스에 부착하는 기본 코드 구현
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Project Setup & eBPF Scaffolding' (Protocol in workflow.md)
+    - [x] `go mod init` 및 `ebpf-go` 종속성 추가
+    - [x] eBPF C 코드 컴파일을 위한 `Makefile` 작성
+- [x] Task: Create basic eBPF TC program (Skeleton) (6a3dc50)
+    - [x] 패킷을 단순히 통과시키는(TC_ACT_OK) 최소한의 C 프로그램 작성
+    - [x] Go에서 프로그램을 로드하고 인터페이스에 부착하는 기본 코드 구현
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Project Setup & eBPF Scaffolding' (Protocol in workflow.md)
 
 ## Phase 2: Connection Tracking & Basic SNAT
 - [ ] Task: Implement SNAT eBPF Maps
