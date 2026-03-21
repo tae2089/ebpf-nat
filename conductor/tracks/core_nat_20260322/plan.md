@@ -12,9 +12,9 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Project Setup & eBPF Scaffolding' (Protocol in workflow.md)
 
 ## Phase 2: Connection Tracking & Basic SNAT
-- [~] Task: Implement SNAT eBPF Maps
+- [x] Task: Implement SNAT eBPF Maps (6a3dc50)
     - [ ] 세션 상태를 저장할 eBPF Hash/LRU 맵 정의 (C & Go)
-- [ ] Task: Implement SNAT Logic in C
+- [~] Task: Implement SNAT Logic in C
     - [ ] IPv4 Source IP/Port 변환 및 체크섬 업데이트 로직 구현
 - [ ] Task: Implement Connection Tracking in Go
     - [ ] 패킷 흐름에 따른 세션 맵 업데이트 및 관리 로직 구현
