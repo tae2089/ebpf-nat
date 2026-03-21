@@ -25,7 +25,7 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Connection Tracking & Basic SNAT' (Protocol in workflow.md)
 
 ## Phase 3: DNAT & Configuration Support
-- [~] Task: Implement DNAT Logic in C
+- [x] Task: Implement DNAT Logic in C (312caa9)
     - [ ] IPv4 Destination IP/Port 변환 및 포트 포워딩 로직 구현
 - [ ] Task: Implement YAML Configuration Loader
     - [ ] `slog`와 `trace`를 사용한 안정적인 설정 로더 구현 (YAML 기반)
