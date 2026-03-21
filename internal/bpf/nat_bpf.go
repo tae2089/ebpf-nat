@@ -7,9 +7,28 @@ import (
 	_ "embed"
 	"fmt"
 	"io"
+	"structs"
 
 	"github.com/cilium/ebpf"
 )
+
+type NatNatEntry struct {
+	_              structs.HostLayout
+	TranslatedIp   uint32
+	TranslatedPort uint16
+	_              [2]byte
+	LastSeen       uint64
+}
+
+type NatNatKey struct {
+	_        structs.HostLayout
+	SrcIp    uint32
+	DstIp    uint32
+	SrcPort  uint16
+	DstPort  uint16
+	Protocol uint8
+	_        [3]byte
+}
 
 // LoadNat returns the embedded CollectionSpec for Nat.
 func LoadNat() (*ebpf.CollectionSpec, error) {
@@ -60,6 +79,7 @@ type NatProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NatMapSpecs struct {
+	ConntrackMap *ebpf.MapSpec `ebpf:"conntrack_map"`
 }
 
 // NatVariableSpecs contains global variables before they are loaded into the kernel.
@@ -88,10 +108,13 @@ func (o *NatObjects) Close() error {
 //
 // It can be passed to LoadNatObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NatMaps struct {
+	ConntrackMap *ebpf.Map `ebpf:"conntrack_map"`
 }
 
 func (m *NatMaps) Close() error {
-	return _NatClose()
+	return _NatClose(
+		m.ConntrackMap,
+	)
 }
 
 // NatVariables contains all global variables after they have been loaded into the kernel.
