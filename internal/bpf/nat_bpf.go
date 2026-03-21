@@ -80,6 +80,7 @@ type NatProgramSpecs struct {
 // It can be passed ebpf.CollectionSpec.Assign.
 type NatMapSpecs struct {
 	ConntrackMap *ebpf.MapSpec `ebpf:"conntrack_map"`
+	DnatRules    *ebpf.MapSpec `ebpf:"dnat_rules"`
 }
 
 // NatVariableSpecs contains global variables before they are loaded into the kernel.
@@ -109,11 +110,13 @@ func (o *NatObjects) Close() error {
 // It can be passed to LoadNatObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NatMaps struct {
 	ConntrackMap *ebpf.Map `ebpf:"conntrack_map"`
+	DnatRules    *ebpf.Map `ebpf:"dnat_rules"`
 }
 
 func (m *NatMaps) Close() error {
 	return _NatClose(
 		m.ConntrackMap,
+		m.DnatRules,
 	)
 }
 
