@@ -9,9 +9,11 @@ import (
 )
 
 type Config struct {
-	Interface string `yaml:"interface"`
-	SNAT      []Rule `yaml:"snat"`
-	DNAT      []Rule `yaml:"dnat"`
+	Interface  string `yaml:"interface"`
+	Masquerade bool   `yaml:"masquerade"`
+	ExternalIP string `yaml:"external_ip,omitempty"`
+	SNAT       []Rule `yaml:"snat"`
+	DNAT       []Rule `yaml:"dnat"`
 }
 
 type Rule struct {

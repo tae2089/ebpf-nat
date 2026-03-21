@@ -18,6 +18,34 @@ func NewManager(objs *bpf.NatObjects) *Manager {
 }
 
 func (m *Manager) LoadConfig(cfg *config.Config) error {
+	if cfg.Masquerade {
+		var externalIP net.IP
+		if cfg.ExternalIP != "" {
+			externalIP = net.ParseIP(cfg.ExternalIP)
+		} else {
+			// Find IP of the interface
+			iface, err := net.InterfaceByName(cfg.Interface)
+			if err == nil {
+				addrs, err := iface.Addrs()
+				if err == nil {
+					for _, addr := range addrs {
+						if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+							if ip4 := ipnet.IP.To4(); ip4 != nil {
+								externalIP = ip4
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		if externalIP != nil {
+			if err := m.SetSNATConfig(externalIP); err != nil {
+				return err
+			}
+		}
+	}
+
 	for _, rule := range cfg.SNAT {
 		proto := parseProtocol(rule.Protocol)
 		if err := m.AddSNATRule(
@@ -40,6 +68,13 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+func (m *Manager) SetSNATConfig(externalIP net.IP) error {
+	cfg := bpf.NatSnatConfig{
+		ExternalIp: ipToUint32(externalIP),
+	}
+	return m.objects.SnatConfigMap.Update(uint32(0), cfg, 0)
 }
 
 func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {

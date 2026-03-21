@@ -4,8 +4,10 @@
 package nat
 
 import (
+	"net"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/cilium/ebpf/rlimit"
 )
@@ -26,5 +28,44 @@ func TestNewMapsExist(t *testing.T) {
 
 	if _, ok := spec.Maps["snat_config_map"]; !ok {
 		t.Error("snat_config_map not found in BPF spec")
+	}
+}
+
+func TestSetSNATConfig(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ebpf.NewMap(spec.Maps["snat_config_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			SnatConfigMap: m,
+		},
+	}
+
+	mgr := NewManager(objs)
+	externalIP := net.ParseIP("1.1.1.1")
+
+	if err := mgr.SetSNATConfig(externalIP); err != nil {
+		t.Fatalf("SetSNATConfig failed: %v", err)
+	}
+
+	var cfg bpf.NatSnatConfig
+	if err := m.Lookup(uint32(0), &cfg); err != nil {
+		t.Fatalf("Lookup failed: %v", err)
+	}
+
+	if cfg.ExternalIp != ipToUint32(externalIP) {
+		t.Errorf("Expected external IP %v, got %v", ipToUint32(externalIP), cfg.ExternalIp)
 	}
 }
