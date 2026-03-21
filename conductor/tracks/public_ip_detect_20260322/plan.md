@@ -1,7 +1,7 @@
 # Plan: Automatic Public IP Detection
 
 ## Phase 1: Environment Detection & Metadata Clients
-- [ ] Task: Implement AWS IMDSv2 client for public IP retrieval.
+- [x] Task: Implement AWS IMDSv2 client for public IP retrieval. [923a576]
 - [ ] Task: Implement GCP Metadata Server client for public IP retrieval.
 - [ ] Task: Implement Generic HTTP client for external IP retrieval (icanhazip.com).
 - [ ] Task: Implement an 'Auto-Detector' that tries each method in sequence.
