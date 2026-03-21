@@ -4,11 +4,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/imtaebin/ebpf-nat/internal/config"
@@ -19,6 +21,8 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
+	ipDetectType := flag.String("ip-detect-type", "", "IP detection type (generic, aws, gcp, auto)")
+	ipDetectInterval := flag.Duration("ip-detect-interval", 5*time.Minute, "IP detection interval")
 	flag.Parse()
 
 	// Load configuration
@@ -31,6 +35,11 @@ func main() {
 	if cfg.Interface == "" {
 		slog.Error("Network interface name is required in config")
 		os.Exit(1)
+	}
+
+	// Override config with flags if provided
+	if *ipDetectType != "" {
+		cfg.IPDetectType = *ipDetectType
 	}
 
 	// Remove memlock limit for eBPF
@@ -53,6 +62,12 @@ func main() {
 		slog.Error("Failed to load NAT rules from config", slog.Any("error", err))
 		os.Exit(1)
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start background tasks
+	go natMgr.RunBackgroundTasks(ctx, *ipDetectInterval)
 
 	// Find the network interface
 	link, err := netlink.LinkByName(cfg.Interface)
@@ -121,5 +136,6 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
+	cancel() // Stop background tasks
 	slog.Info("Detaching eBPF program and exiting...")
 }
