@@ -26,6 +26,22 @@ struct {
     __type(value, struct nat_entry);
 } dnat_rules SEC(".maps");
 
+// Reverse NAT map for return traffic and collision check
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, struct nat_key);
+    __type(value, struct nat_entry);
+} reverse_nat_map SEC(".maps");
+
+// Global SNAT configuration
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, struct snat_config);
+} snat_config_map SEC(".maps");
+
 SEC("tc")
 int tc_nat_prog(struct __sk_buff *skb) {
     void *data_end = (void *)(long)skb->data_end;

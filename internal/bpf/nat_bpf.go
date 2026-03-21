@@ -30,6 +30,11 @@ type NatNatKey struct {
 	_        [3]byte
 }
 
+type NatSnatConfig struct {
+	_          structs.HostLayout
+	ExternalIp uint32
+}
+
 // LoadNat returns the embedded CollectionSpec for Nat.
 func LoadNat() (*ebpf.CollectionSpec, error) {
 	reader := bytes.NewReader(_NatBytes)
@@ -79,8 +84,10 @@ type NatProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NatMapSpecs struct {
-	ConntrackMap *ebpf.MapSpec `ebpf:"conntrack_map"`
-	DnatRules    *ebpf.MapSpec `ebpf:"dnat_rules"`
+	ConntrackMap  *ebpf.MapSpec `ebpf:"conntrack_map"`
+	DnatRules     *ebpf.MapSpec `ebpf:"dnat_rules"`
+	ReverseNatMap *ebpf.MapSpec `ebpf:"reverse_nat_map"`
+	SnatConfigMap *ebpf.MapSpec `ebpf:"snat_config_map"`
 }
 
 // NatVariableSpecs contains global variables before they are loaded into the kernel.
@@ -109,14 +116,18 @@ func (o *NatObjects) Close() error {
 //
 // It can be passed to LoadNatObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NatMaps struct {
-	ConntrackMap *ebpf.Map `ebpf:"conntrack_map"`
-	DnatRules    *ebpf.Map `ebpf:"dnat_rules"`
+	ConntrackMap  *ebpf.Map `ebpf:"conntrack_map"`
+	DnatRules     *ebpf.Map `ebpf:"dnat_rules"`
+	ReverseNatMap *ebpf.Map `ebpf:"reverse_nat_map"`
+	SnatConfigMap *ebpf.Map `ebpf:"snat_config_map"`
 }
 
 func (m *NatMaps) Close() error {
 	return _NatClose(
 		m.ConntrackMap,
 		m.DnatRules,
+		m.ReverseNatMap,
+		m.SnatConfigMap,
 	)
 }
 
