@@ -1,7 +1,7 @@
 # Tech Stack: TC-based NAT with ebpf-go
 
 ## 1. Programming Languages & eBPF Interaction
-- **Go (Control Plane):** `ebpf-go` 라이브러리를 사용하여 eBPF 프로그램을 로드하고 맵을 관리하며 컨트롤 플레인 기능을 수행합니다.
+- **Go (Control Plane):** `ebpf-go` 라이브러리를 사용하여 eBPF 프로그램을 로드하고 맵을 관리하며 컨트롤 플레인 기능을 수행합니다 (Go 1.25 고정 사용).
 - **C (Data Plane):** 리눅스 커널의 TC 계층에서 실행될 eBPF 프로그램을 표준 C 언어로 작성하며, `Clang/LLVM`을 통해 컴파일합니다.
 
 ## 2. Frameworks & Libraries
