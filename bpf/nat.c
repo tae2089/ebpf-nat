@@ -18,7 +18,8 @@ struct {
     __type(value, struct nat_entry);
 } conntrack_map SEC(".maps");
 
-static __always_inline int handle_ipv4(struct __sk_buff *skb) {
+SEC("tc")
+int tc_nat_prog(struct __sk_buff *skb) {
     void *data_end = (void *)(long)skb->data_end;
     void *data     = (void *)(long)skb->data;
 
@@ -56,49 +57,41 @@ static __always_inline int handle_ipv4(struct __sk_buff *skb) {
 
     struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
     if (!entry) {
-        // No session found, pass it or handle later in Go
         return TC_ACT_OK;
     }
 
-    // Update last seen for session aging
     entry->last_seen = bpf_ktime_get_ns();
 
-    // Perform SNAT: update source IP and port
     __be32 old_ip = iph->saddr;
     __be32 new_ip = entry->translated_ip;
-    
-    // IP header modification
+    __be16 new_port = entry->translated_port;
+
+    // Boundary check again before modification
+    if ((void *)(iph + 1) > data_end)
+        return TC_ACT_OK;
+
     iph->saddr = new_ip;
-    
-    // Checksum update (Incremental)
     bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
 
     if (iph->protocol == IPPROTO_TCP) {
         struct tcphdr *th = (void *)(iph + 1);
-        if ((void *)(th + 1) <= data_end) {
-            __be16 old_port = th->source;
-            __be16 new_port = entry->translated_port;
-            th->source = new_port;
-            bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-            bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_port, new_port, sizeof(new_port));
-        }
+        if ((void *)(th + 1) > data_end)
+            return TC_ACT_OK;
+        __be16 old_port = th->source;
+        th->source = new_port;
+        bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
+        bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_port, new_port, sizeof(new_port));
     } else if (iph->protocol == IPPROTO_UDP) {
         struct udphdr *uh = (void *)(iph + 1);
-        if ((void *)(uh + 1) <= data_end) {
-            __be16 old_port = uh->source;
-            __be16 new_port = entry->translated_port;
-            uh->source = new_port;
-            bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-            bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_port, new_port, sizeof(new_port));
-        }
+        if ((void *)(uh + 1) > data_end)
+            return TC_ACT_OK;
+        __be16 old_port = uh->source;
+        uh->source = new_port;
+        bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
+        bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_port, new_port, sizeof(new_port));
     }
 
     return TC_ACT_OK;
-}
-
-SEC("tc")
-int tc_nat_prog(struct __sk_buff *skb) {
-    return handle_ipv4(skb);
 }
 
 char _license[] SEC("license") = "GPL";
