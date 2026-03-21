@@ -11,18 +11,18 @@
     - [x] Go에서 프로그램을 로드하고 인터페이스에 부착하는 기본 코드 구현
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Project Setup & eBPF Scaffolding' (Protocol in workflow.md)
 
-## Phase 2: Connection Tracking & Basic SNAT
+## Phase 2: Connection Tracking & Basic SNAT [checkpoint: 312caa9]
 - [x] Task: Implement SNAT eBPF Maps (6a3dc50)
-    - [ ] 세션 상태를 저장할 eBPF Hash/LRU 맵 정의 (C & Go)
+    - [x] 세션 상태를 저장할 eBPF Hash/LRU 맵 정의 (C & Go)
 - [x] Task: Implement SNAT Logic in C (b7cbc00)
-    - [ ] IPv4 Source IP/Port 변환 및 체크섬 업데이트 로직 구현
+    - [x] IPv4 Source IP/Port 변환 및 체크섬 업데이트 로직 구현
 - [x] Task: Implement Connection Tracking in Go (249e127)
-    - [ ] 패킷 흐름에 따른 세션 맵 업데이트 및 관리 로직 구현
-- [~] Task: Write Tests for SNAT
-    - [ ] 네트워크 네임스페이스를 활용한 가상 환경에서 SNAT 변환 검증 테스트 작성
-- [ ] Task: Implement SNAT to Pass Tests
-    - [ ] 위 테스트를 통과하도록 C 및 Go 코드 완성
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Connection Tracking & Basic SNAT' (Protocol in workflow.md)
+    - [x] 패킷 흐름에 따른 세션 맵 업데이트 및 관리 로직 구현
+- [x] Task: Write Tests for SNAT (23e5ba7)
+    - [x] 네트워크 네임스페이스를 활용한 가상 환경에서 SNAT 변환 검증 테스트 작성
+- [x] Task: Implement SNAT to Pass Tests (312caa9)
+    - [x] 위 테스트를 통과하도록 C 및 Go 코드 완성
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Connection Tracking & Basic SNAT' (Protocol in workflow.md)
 
 ## Phase 3: DNAT & Configuration Support
 - [ ] Task: Implement DNAT Logic in C
