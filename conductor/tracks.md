@@ -9,7 +9,4 @@ This file tracks all major tracks for the project. Each track has its own detail
 - [x] [Automatic Public IP Detection](./archive/public_ip_detect_20260322/index.md) - Environment-aware external IP discovery
 - [x] [Session Management (Aging and Cleanup)](./archive/session_aging_20260322/index.md) - User-space GC for inactive sessions
 - [x] [ICMP NAT Support](./archive/icmp_nat_support_20260322/index.md) - ICMP Echo/Error translation and ID-NAT support
-
----
-
-- [x] [Prometheus Metrics Implementation](./tracks/prometheus_metrics_20260322/index.md) - Real-time observability with minimal memory overhead
+- [x] [Prometheus Metrics Implementation](./archive/prometheus_metrics_20260322/index.md) - Real-time observability with minimal memory overhead
