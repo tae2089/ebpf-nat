@@ -1,10 +1,10 @@
 # Plan: End-to-End Black-box Testing
 
 ## Phase 1: Test Environment Automation
-- [ ] Task: Implement a Go-based or Bash-based test runner that creates Linux Network Namespaces (`ns-internal`, `ns-external`).
-- [ ] Task: Set up `veth` pairs and assign IP addresses to simulate a gateway topology.
-- [ ] Task: Implement a cleanup routine to ensure no orphaned namespaces or interfaces remain.
-- [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
+- [x] Task: Implement a Go-based or Bash-based test runner that creates Linux Network Namespaces (`ns-internal`, `ns-external`). [7c1c276]
+- [x] Task: Set up `veth` pairs and assign IP addresses to simulate a gateway topology. [7c1c276]
+- [x] Task: Implement a cleanup routine to ensure no orphaned namespaces or interfaces remain. [7c1c276]
+- [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md) [7c1c276]
 
 ## Phase 2: Functional Test Scenarios
 - [ ] Task: Implement a 'TCP Connectivity Test' using `nc` or Go's `net` package across namespaces.
