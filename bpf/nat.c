@@ -102,6 +102,26 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
         bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
         bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
         bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_port, new_port, sizeof(new_port));
+    } else if (protocol == IPPROTO_ICMP) {
+        struct icmphdr *ih = (void *)(iph + 1);
+        if ((void *)(ih + 1) > data_end)
+            return TC_ACT_OK;
+
+        // Echo Request (is_snat) or Echo Reply (not is_snat)
+        if (ih->type == ICMP_ECHO || ih->type == ICMP_ECHOREPLY) {
+            old_port = ih->un.echo.id;
+            ih->un.echo.id = new_port;
+            
+            if (is_snat) {
+                iph->saddr = new_ip;
+            } else {
+                iph->daddr = new_ip;
+            }
+            
+            bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
+            // ICMP doesn't use pseudo-header for checksum
+            bpf_l4_csum_replace(skb, offsetof(struct icmphdr, checksum), old_port, new_port, sizeof(new_port));
+        }
     }
 
     return TC_ACT_OK;
@@ -140,6 +160,18 @@ int tc_nat_prog(struct __sk_buff *skb) {
             return TC_ACT_OK;
         key.src_port = uh->source;
         key.dst_port = uh->dest;
+    } else if (iph->protocol == IPPROTO_ICMP) {
+        struct icmphdr *ih = (void *)(iph + 1);
+        if ((void *)(ih + 1) > data_end)
+            return TC_ACT_OK;
+        
+        if (ih->type == ICMP_ECHO || ih->type == ICMP_ECHOREPLY) {
+            key.src_port = ih->un.echo.id;
+            key.dst_port = ih->un.echo.id; // ICMP doesn't have dst_port, use ID for both
+        } else {
+            // Error messages (Type 3, 11 etc) will be handled in Phase 2
+            return TC_ACT_OK;
+        }
     } else {
         return TC_ACT_OK;
     }
@@ -181,7 +213,7 @@ int tc_nat_prog(struct __sk_buff *skb) {
         return TC_ACT_OK;
     }
 
-    // Port Allocation
+    // Port/ID Allocation
     __u32 hash = bpf_get_prandom_u32();
     __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
     __u16 allocated_port = 0;
@@ -195,8 +227,14 @@ int tc_nat_prog(struct __sk_buff *skb) {
         struct nat_key rev_check_key = {0};
         rev_check_key.src_ip = iph->daddr;
         rev_check_key.dst_ip = cfg->external_ip;
-        rev_check_key.src_port = key.dst_port;
-        rev_check_key.dst_port = bpf_htons(test_port);
+        
+        if (iph->protocol == IPPROTO_ICMP) {
+            rev_check_key.src_port = bpf_htons(test_port); // Expected ID in reply
+            rev_check_key.dst_port = bpf_htons(test_port);
+        } else {
+            rev_check_key.src_port = key.dst_port;
+            rev_check_key.dst_port = bpf_htons(test_port);
+        }
         rev_check_key.protocol = iph->protocol;
 
         if (!bpf_map_lookup_elem(&reverse_nat_map, &rev_check_key)) {
@@ -206,7 +244,7 @@ int tc_nat_prog(struct __sk_buff *skb) {
     }
 
     if (allocated_port == 0) {
-        return TC_ACT_OK; // No port available
+        return TC_ACT_OK; // No port/ID available
     }
 
     // Create conntrack entries
@@ -220,8 +258,14 @@ int tc_nat_prog(struct __sk_buff *skb) {
     struct nat_key reverse_key = {0};
     reverse_key.src_ip = iph->daddr;
     reverse_key.dst_ip = cfg->external_ip;
-    reverse_key.src_port = key.dst_port;
-    reverse_key.dst_port = allocated_port;
+    
+    if (iph->protocol == IPPROTO_ICMP) {
+        reverse_key.src_port = allocated_port;
+        reverse_key.dst_port = allocated_port;
+    } else {
+        reverse_key.src_port = key.dst_port;
+        reverse_key.dst_port = allocated_port;
+    }
     reverse_key.protocol = iph->protocol;
 
     struct nat_entry reverse_entry = {

@@ -25,4 +25,27 @@ struct snat_config {
     __u32 external_ip;
 };
 
+// Minimal ICMP header for eBPF
+struct icmphdr {
+    __u8		type;
+    __u8		code;
+    __sum16		checksum;
+    union {
+        struct {
+            __be16	id;
+            __be16	sequence;
+        } echo;
+        __be32	gateway;
+        struct {
+            __be16	__unused;
+            __be16	mtu;
+        } frag;
+    } un;
+};
+
+#define ICMP_ECHOREPLY		0	/* Echo Reply			*/
+#define ICMP_DEST_UNREACH	3	/* Destination Unreachable	*/
+#define ICMP_ECHO		8	/* Echo Request			*/
+#define ICMP_TIME_EXCEEDED	11	/* Time Exceeded		*/
+
 #endif /* __NAT_H__ */
