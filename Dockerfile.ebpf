@@ -5,6 +5,11 @@ RUN apt-get update && apt-get install -y \
     llvm \
     libbpf-dev \
     linux-libc-dev \
+    iproute2 \
+    net-tools \
+    tcpdump \
+    iputils-ping \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # asm/types.h 등의 누락을 방지하기 위해 심볼릭 링크 생성 (필요한 경우)

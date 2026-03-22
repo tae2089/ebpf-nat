@@ -10,3 +10,8 @@ This file tracks all major tracks for the project. Each track has its own detail
 - [x] [Session Management (Aging and Cleanup)](./archive/session_aging_20260322/index.md) - User-space GC for inactive sessions
 - [x] [ICMP NAT Support](./archive/icmp_nat_support_20260322/index.md) - ICMP Echo/Error translation and ID-NAT support
 - [x] [Prometheus Metrics Implementation](./archive/prometheus_metrics_20260322/index.md) - Real-time observability with minimal memory overhead
+
+---
+
+- [ ] **Track: End-to-End Black-box Testing**
+*Link: [./tracks/blackbox_testing_20260322/](./tracks/blackbox_testing_20260322/)*
