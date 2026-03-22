@@ -8,3 +8,8 @@ This file tracks all major tracks for the project. Each track has its own detail
 - [x] [Dynamic SNAT (Masquerading)](./archive/dynamic_snat_20260322/index.md) - eBPF kernel-level port allocation
 - [x] [Automatic Public IP Detection](./archive/public_ip_detect_20260322/index.md) - Environment-aware external IP discovery
 - [x] [Session Management (Aging and Cleanup)](./archive/session_aging_20260322/index.md) - User-space GC for inactive sessions
+
+---
+
+- [ ] **Track: ICMP NAT Support**
+*Link: [./tracks/icmp_nat_support_20260322/](./tracks/icmp_nat_support_20260322/)*
