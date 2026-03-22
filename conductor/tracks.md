@@ -13,3 +13,6 @@ This file tracks all major tracks for the project. Each track has its own detail
 - [x] [End-to-End Black-box Testing](./archive/blackbox_testing_20260322/index.md) - Functional verification using network namespaces
 
 ---
+
+- [x] **Track: GoReleaser CI/CD Pipeline**
+*Link: [./tracks/goreleaser_cicd_20260322/](./tracks/goreleaser_cicd_20260322/)*
