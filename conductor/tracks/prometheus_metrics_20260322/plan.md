@@ -7,9 +7,9 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md) [ac14405]
 
 ## Phase 2: Go User-Space Metrics Collection
-- [ ] Task: Create `internal/metrics` package to interface with the eBPF `metrics_map`.
-- [ ] Task: Implement a 'Scraper' that reads `metrics_map` and the session maps (`conntrack_map`) to provide gauge and counter data.
-- [ ] Task: Initialize standard Prometheus registers using `prometheus/client_golang`.
+- [x] Task: Create `internal/metrics` package to interface with the eBPF `metrics_map`. [0182b1d]
+- [x] Task: Implement a 'Scraper' that reads `metrics_map` and the session maps (`conntrack_map`) to provide gauge and counter data. [0182b1d]
+- [x] Task: Initialize standard Prometheus registers using `prometheus/client_golang`. [0182b1d]
 - [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
 
 ## Phase 3: HTTP Server & Configuration
