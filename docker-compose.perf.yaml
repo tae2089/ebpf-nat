@@ -1,6 +1,8 @@
 services:
   nat-gateway:
-    build: ./perf/gateway
+    build:
+      context: .
+      dockerfile: perf/gateway/Dockerfile
     privileged: true
     deploy:
       resources:
