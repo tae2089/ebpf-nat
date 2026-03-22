@@ -23,6 +23,9 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
 	ipDetectType := flag.String("ip-detect-type", "", "IP detection type (generic, aws, gcp, auto)")
 	ipDetectInterval := flag.Duration("ip-detect-interval", 5*time.Minute, "IP detection interval")
+	gcIntervalStr := flag.String("gc-interval", "", "Garbage collection interval (e.g., 1m)")
+	tcpTimeoutStr := flag.String("tcp-timeout", "", "TCP session timeout (e.g., 24h)")
+	udpTimeoutStr := flag.String("udp-timeout", "", "UDP session timeout (e.g., 5m)")
 	flag.Parse()
 
 	// Load configuration
@@ -40,6 +43,35 @@ func main() {
 	// Override config with flags if provided
 	if *ipDetectType != "" {
 		cfg.IPDetectType = *ipDetectType
+	}
+	if *gcIntervalStr != "" {
+		cfg.GCInterval = *gcIntervalStr
+	}
+	if *tcpTimeoutStr != "" {
+		cfg.TCPTimeout = *tcpTimeoutStr
+	}
+	if *udpTimeoutStr != "" {
+		cfg.UDPTimeout = *udpTimeoutStr
+	}
+
+	// Parse duration settings with defaults
+	gcInterval := 1 * time.Minute
+	if cfg.GCInterval != "" {
+		if d, err := time.ParseDuration(cfg.GCInterval); err == nil {
+			gcInterval = d
+		}
+	}
+	tcpTimeout := 24 * time.Hour
+	if cfg.TCPTimeout != "" {
+		if d, err := time.ParseDuration(cfg.TCPTimeout); err == nil {
+			tcpTimeout = d
+		}
+	}
+	udpTimeout := 5 * time.Minute
+	if cfg.UDPTimeout != "" {
+		if d, err := time.ParseDuration(cfg.UDPTimeout); err == nil {
+			udpTimeout = d
+		}
 	}
 
 	// Remove memlock limit for eBPF
@@ -67,7 +99,7 @@ func main() {
 	defer cancel()
 
 	// Start background tasks
-	go natMgr.RunBackgroundTasks(ctx, *ipDetectInterval)
+	go natMgr.RunBackgroundTasks(ctx, *ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)
 
 	// Find the network interface
 	link, err := netlink.LinkByName(cfg.Interface)

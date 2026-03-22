@@ -13,6 +13,9 @@ type Config struct {
 	Masquerade   bool   `yaml:"masquerade"`
 	ExternalIP   string `yaml:"external_ip,omitempty"`
 	IPDetectType string `yaml:"ip_detect_type,omitempty"` // generic, aws, gcp, auto
+	GCInterval   string `yaml:"gc_interval,omitempty"`    // e.g., "1m"
+	TCPTimeout   string `yaml:"tcp_timeout,omitempty"`    // e.g., "24h"
+	UDPTimeout   string `yaml:"udp_timeout,omitempty"`    // e.g., "5m"
 	SNAT         []Rule `yaml:"snat"`
 	DNAT         []Rule `yaml:"dnat"`
 }

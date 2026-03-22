@@ -116,27 +116,38 @@ func (m *Manager) updatePublicIP(ctx context.Context) error {
 	return m.SetSNATConfig(ip)
 }
 
-// RunBackgroundTasks starts periodic tasks like IP detection.
-func (m *Manager) RunBackgroundTasks(ctx context.Context, interval time.Duration) {
-	if m.ipDetector == nil {
-		return
+// RunBackgroundTasks starts periodic tasks like IP detection and garbage collection.
+func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcInterval, tcpTimeout, udpTimeout time.Duration) {
+	var ipTicker *time.Ticker
+	var ipTickerC <-chan time.Time
+	
+	if m.ipDetector != nil {
+		slog.Info("Starting background IP detection", slog.Duration("interval", ipDetectInterval))
+		ipTicker = time.NewTicker(ipDetectInterval)
+		defer ipTicker.Stop()
+		ipTickerC = ipTicker.C
 	}
 
-	slog.Info("Starting background IP detection", slog.Duration("interval", interval))
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	slog.Info("Starting background garbage collection", slog.Duration("interval", gcInterval))
+	gcTicker := time.NewTicker(gcInterval)
+	defer gcTicker.Stop()
+	
+	gc := NewGarbageCollector(m.objects, tcpTimeout, udpTimeout)
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("Stopping background IP detection")
+			slog.Info("Stopping background tasks")
 			return
-		case <-ticker.C:
+		case <-ipTickerC:
 			slog.Debug("Triggering periodic public IP detection")
 			if err := m.updatePublicIP(ctx); err != nil {
 				slog.Error("Periodic public IP detection failed", slog.Any("error", err))
-				// We don't overwrite with private IP here to avoid flapping 
-				// if it was previously successful.
+			}
+		case <-gcTicker.C:
+			now := uint64(time.Now().UnixNano())
+			if err := gc.RunOnce(ctx, now); err != nil {
+				slog.Error("Garbage collection failed", slog.Any("error", err))
 			}
 		}
 	}

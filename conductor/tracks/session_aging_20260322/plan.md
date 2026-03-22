@@ -13,6 +13,9 @@
 - [x] Task: Add a CLI flag to override the GC interval in `main.go`. [7b2f533]
 - [x] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md) [7b2f533]
 
+## Phase: Review Fixes
+- [x] Task: Apply review suggestions [bc4a4b6]
+
 ---
 
 ### TDD Execution (per task)
