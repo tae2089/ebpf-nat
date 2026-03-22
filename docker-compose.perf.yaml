@@ -1,0 +1,42 @@
+services:
+  nat-gateway:
+    build: ./perf/gateway
+    privileged: true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    networks:
+      net-internal:
+        ipv4_address: 172.20.0.1
+      net-external:
+        ipv4_address: 172.30.0.1
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+
+  client:
+    build: ./perf/client
+    networks:
+      net-internal:
+        ipv4_address: 172.20.0.2
+    cap_add:
+      - NET_ADMIN
+
+  server:
+    build: ./perf/server
+    networks:
+      net-external:
+        ipv4_address: 172.30.0.2
+
+networks:
+  net-internal:
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  net-external:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
