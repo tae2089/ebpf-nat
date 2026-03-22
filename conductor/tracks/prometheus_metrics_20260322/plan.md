@@ -1,9 +1,9 @@
 # Plan: Prometheus Metrics Implementation
 
 ## Phase 1: eBPF Data Plane Instrumentation
-- [ ] Task: Update `bpf/nat.h` to include a metrics structure and a new BPF map (`metrics_map`) for global counters.
-- [ ] Task: Update `bpf/nat.c` to increment packet and byte counters at key processing points (ingress/egress, translate/drop/pass).
-- [ ] Task: Implement port allocation failure tracking in `bpf/nat.c`.
+- [x] Task: Update `bpf/nat.h` to include a metrics structure and a new BPF map (`metrics_map`) for global counters. [8b2d419]
+- [x] Task: Update `bpf/nat.c` to increment packet and byte counters at key processing points (ingress/egress, translate/drop/pass). [8b2d419]
+- [x] Task: Implement port allocation failure tracking in `bpf/nat.c`. [8b2d419]
 - [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
 
 ## Phase 2: Go User-Space Metrics Collection
