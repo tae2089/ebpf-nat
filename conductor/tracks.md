@@ -11,8 +11,6 @@ This file tracks all major tracks for the project. Each track has its own detail
 - [x] [ICMP NAT Support](./archive/icmp_nat_support_20260322/index.md) - ICMP Echo/Error translation and ID-NAT support
 - [x] [Prometheus Metrics Implementation](./archive/prometheus_metrics_20260322/index.md) - Real-time observability with minimal memory overhead
 - [x] [End-to-End Black-box Testing](./archive/blackbox_testing_20260322/index.md) - Functional verification using network namespaces
+- [x] [GoReleaser CI/CD Pipeline](./archive/goreleaser_cicd_20260322/index.md) - Automated cross-compilation and release
 
 ---
-
-- [x] **Track: GoReleaser CI/CD Pipeline**
-*Link: [./tracks/goreleaser_cicd_20260322/](./tracks/goreleaser_cicd_20260322/)*
