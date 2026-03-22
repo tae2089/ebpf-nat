@@ -60,7 +60,7 @@ func TestMetricsIncrement(t *testing.T) {
 	}
 
 	// Run the program
-	ret, _, err := objs.TcNatProg.Test(packet)
+	ret, _, err := objs.TcNatEgress.Test(packet)
 	if err != nil {
 		t.Fatal(err)
 	}

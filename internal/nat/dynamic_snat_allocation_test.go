@@ -56,7 +56,7 @@ func TestDynamicSNATAllocation(t *testing.T) {
 		0x00, 0x00,
 	}
 
-	ret, out, err := objs.TcNatProg.Test(packet)
+	ret, out, err := objs.TcNatEgress.Test(packet)
 	if err != nil {
 		t.Fatal(err)
 	}

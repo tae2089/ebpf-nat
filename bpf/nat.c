@@ -88,7 +88,6 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
         new_ip = entry->translated_ip;
     }
     
-    // translated_port is Host Order in entry, must convert to Network Order for packet
     new_port_be = bpf_htons(entry->translated_port);
 
     if (protocol == IPPROTO_TCP) {
@@ -104,9 +103,9 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
             th->dest = new_port_be;
             iph->daddr = new_ip;
         }
-        bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
-        bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-        bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
+        bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
+        bpf_l4_csum_replace(skb, 34 + offsetof(struct tcphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
+        bpf_l4_csum_replace(skb, 34 + offsetof(struct tcphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
     } else if (protocol == IPPROTO_UDP) {
         struct udphdr *uh = (void *)(iph + 1);
         if ((void *)(uh + 1) > data_end) return TC_ACT_OK;
@@ -120,9 +119,9 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
             uh->dest = new_port_be;
             iph->daddr = new_ip;
         }
-        bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
-        bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-        bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
+        bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
+        bpf_l4_csum_replace(skb, 34 + offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
+        bpf_l4_csum_replace(skb, 34 + offsetof(struct udphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
     } else if (protocol == IPPROTO_ICMP) {
         struct icmphdr *ih = (void *)(iph + 1);
         if ((void *)(ih + 1) > data_end) return TC_ACT_OK;
@@ -133,8 +132,8 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
             if (is_snat) iph->saddr = new_ip;
             else iph->daddr = new_ip;
             
-            bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
-            bpf_l4_csum_replace(skb, offsetof(struct icmphdr, checksum), old_port_be, new_port_be, sizeof(new_port_be));
+            bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
+            bpf_l4_csum_replace(skb, 34 + offsetof(struct icmphdr, checksum), old_port_be, new_port_be, sizeof(new_port_be));
         }
     }
 
@@ -180,15 +179,14 @@ static __always_inline int apply_nat_icmp_error(struct __sk_buff *skb, struct na
     return TC_ACT_OK;
 }
 
-SEC("tc")
-int tc_nat_prog(struct __sk_buff *skb) {
+static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     void *data_end = (void *)(long)skb->data_end;
     void *data     = (void *)(long)skb->data;
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+
     if (eth->h_proto != bpf_htons(ETH_P_IP)) {
-        update_metrics(0, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
         return TC_ACT_OK;
     }
     struct iphdr *iph = (void *)(eth + 1);
@@ -217,131 +215,138 @@ int tc_nat_prog(struct __sk_buff *skb) {
             key.src_port = bpf_ntohs(ih->un.echo.id);
             key.dst_port = bpf_ntohs(ih->un.echo.id);
         } else if (ih->type == ICMP_DEST_UNREACH || ih->type == ICMP_TIME_EXCEEDED) {
-            struct iphdr *inner_iph = (void *)(ih + 1);
-            if ((void *)(inner_iph + 1) > data_end) return TC_ACT_OK;
+            if (is_ingress) {
+                struct iphdr *inner_iph = (void *)(ih + 1);
+                if ((void *)(inner_iph + 1) > data_end) return TC_ACT_OK;
 
-            struct nat_key lookup_key = {0};
-            lookup_key.src_ip = inner_iph->daddr;
-            lookup_key.dst_ip = inner_iph->saddr;
-            lookup_key.protocol = inner_iph->protocol;
+                struct nat_key lookup_key = {0};
+                lookup_key.src_ip = inner_iph->daddr;
+                lookup_key.dst_ip = inner_iph->saddr;
+                lookup_key.protocol = inner_iph->protocol;
 
-            // Only need first 4 bytes of inner L4 header for ports
-            if (data + 62 + 4 > data_end) return TC_ACT_OK;
-            __be16 *inner_ports = data + 62;
-            lookup_key.src_port = bpf_ntohs(inner_ports[1]); // inner_th->dest
-            lookup_key.dst_port = bpf_ntohs(inner_ports[0]); // inner_th->source
+                if (data + 62 + 4 > data_end) return TC_ACT_OK;
+                __be16 *inner_ports = data + 62;
+                lookup_key.src_port = bpf_ntohs(inner_ports[1]);
+                lookup_key.dst_port = bpf_ntohs(inner_ports[0]);
 
-            struct nat_entry *inner_entry = bpf_map_lookup_elem(&reverse_nat_map, &lookup_key);
-            if (inner_entry) {
-                update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
-                return apply_nat_icmp_error(skb, inner_entry);
+                struct nat_entry *inner_entry = bpf_map_lookup_elem(&reverse_nat_map, &lookup_key);
+                if (inner_entry) {
+                    update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
+                    return apply_nat_icmp_error(skb, inner_entry);
+                }
             }
-            update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
             return TC_ACT_OK;
         } else {
-            update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
             return TC_ACT_OK;
         }
     } else {
-        update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
         return TC_ACT_OK;
     }
 
-    struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
-    if (entry) {
-        entry->last_seen = bpf_ktime_get_ns();
-        update_metrics(key.protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
-        return apply_nat(skb, entry, true);
-    }
+    if (is_ingress) {
+        // Ingress path: DNAT lookup (for return traffic or port forwarding)
+        struct nat_entry *entry = bpf_map_lookup_elem(&reverse_nat_map, &key);
+        if (entry) {
+            entry->last_seen = bpf_ktime_get_ns();
+            update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
+            return apply_nat(skb, entry, false);
+        }
 
-    entry = bpf_map_lookup_elem(&reverse_nat_map, &key);
-    if (entry) {
-        entry->last_seen = bpf_ktime_get_ns();
-        update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
-        return apply_nat(skb, entry, false);
-    }
+        entry = bpf_map_lookup_elem(&dnat_rules, &key);
+        if (entry) {
+            entry->last_seen = bpf_ktime_get_ns();
+            update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
+            return apply_nat(skb, entry, false);
+        }
+    } else {
+        // Egress path: SNAT lookup or new session
+        struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
+        if (entry) {
+            entry->last_seen = bpf_ktime_get_ns();
+            update_metrics(key.protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+            return apply_nat(skb, entry, true);
+        }
 
-    entry = bpf_map_lookup_elem(&dnat_rules, &key);
-    if (entry) {
-        entry->last_seen = bpf_ktime_get_ns();
-        update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
-        return apply_nat(skb, entry, false);
-    }
+        // Check if we should create a new SNAT session
+        __u32 zero = 0;
+        struct snat_config *cfg = bpf_map_lookup_elem(&snat_config_map, &zero);
+        if (!cfg || cfg->external_ip == 0) return TC_ACT_OK;
+        if (iph->saddr == cfg->external_ip) return TC_ACT_OK;
 
-    __u32 zero = 0;
-    struct snat_config *cfg = bpf_map_lookup_elem(&snat_config_map, &zero);
-    if (!cfg || cfg->external_ip == 0) {
-        update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
-        return TC_ACT_OK;
-    }
+        // Dynamic SNAT allocation logic
+        __u32 hash = bpf_get_prandom_u32();
+        __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
+        __u16 allocated_port = 0;
 
-    if ((void *)(iph + 1) > data_end) return TC_ACT_OK;
-    if (iph->saddr == cfg->external_ip) {
-        update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
-        return TC_ACT_OK;
-    }
+        #pragma unroll
+        for (int i = 0; i < PORT_SCAN_LIMIT; i++) {
+            __u32 test_port_32 = EPHEMERAL_PORT_START + ((start_port - EPHEMERAL_PORT_START + i) % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
+            __u16 test_port = (__u16)test_port_32;
 
-    __u32 hash = bpf_get_prandom_u32();
-    __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
-    __u16 allocated_port = 0;
+            struct nat_key rev_check_key = {0};
+            rev_check_key.src_ip = iph->daddr;
+            rev_check_key.dst_ip = cfg->external_ip;
+            if (iph->protocol == IPPROTO_ICMP) {
+                rev_check_key.src_port = test_port;
+                rev_check_key.dst_port = test_port;
+            } else {
+                rev_check_key.src_port = key.dst_port;
+                rev_check_key.dst_port = test_port;
+            }
+            rev_check_key.protocol = iph->protocol;
 
-    #pragma unroll
-    for (int i = 0; i < PORT_SCAN_LIMIT; i++) {
-        __u32 test_port_32 = EPHEMERAL_PORT_START + ((start_port - EPHEMERAL_PORT_START + i) % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
-        __u16 test_port = (__u16)test_port_32;
-        __be16 test_port_be = bpf_htons(test_port);
+            if (!bpf_map_lookup_elem(&reverse_nat_map, &rev_check_key)) {
+                allocated_port = test_port;
+                break;
+            }
+        }
 
-        struct nat_key rev_check_key = {0};
-        rev_check_key.src_ip = iph->daddr;
-        rev_check_key.dst_ip = cfg->external_ip;
+        if (allocated_port == 0) {
+            update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_ALLOC_FAIL, skb->len);
+            return TC_ACT_OK;
+        }
+
+        struct nat_entry forward_entry = {
+            .translated_ip = cfg->external_ip,
+            .translated_port = allocated_port,
+            .last_seen = bpf_ktime_get_ns(),
+        };
+        bpf_map_update_elem(&conntrack_map, &key, &forward_entry, BPF_ANY);
+
+        struct nat_key reverse_key = {0};
+        reverse_key.src_ip = iph->daddr;
+        reverse_key.dst_ip = cfg->external_ip;
         if (iph->protocol == IPPROTO_ICMP) {
-            rev_check_key.src_port = test_port;
-            rev_check_key.dst_port = test_port;
+            reverse_key.src_port = allocated_port;
+            reverse_key.dst_port = allocated_port;
         } else {
-            rev_check_key.src_port = key.dst_port;
-            rev_check_key.dst_port = test_port;
+            reverse_key.src_port = key.dst_port;
+            reverse_key.dst_port = allocated_port;
         }
-        rev_check_key.protocol = iph->protocol;
+        reverse_key.protocol = iph->protocol;
 
-        if (!bpf_map_lookup_elem(&reverse_nat_map, &rev_check_key)) {
-            allocated_port = test_port;
-            break;
-        }
+        struct nat_entry reverse_entry = {
+            .translated_ip = iph->saddr,
+            .translated_port = key.src_port,
+            .last_seen = bpf_ktime_get_ns(),
+        };
+        bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY);
+
+        update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+        return apply_nat(skb, &forward_entry, true);
     }
 
-    if (allocated_port == 0) {
-        update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_ALLOC_FAIL, skb->len);
-        return TC_ACT_OK;
-    }
+    return TC_ACT_OK;
+}
 
-    struct nat_entry forward_entry = {
-        .translated_ip = cfg->external_ip,
-        .translated_port = allocated_port,
-        .last_seen = bpf_ktime_get_ns(),
-    };
-    bpf_map_update_elem(&conntrack_map, &key, &forward_entry, BPF_ANY);
+SEC("tc/ingress")
+int tc_nat_ingress(struct __sk_buff *skb) {
+    return handle_nat(skb, true);
+}
 
-    struct nat_key reverse_key = {0};
-    reverse_key.src_ip = iph->daddr;
-    reverse_key.dst_ip = cfg->external_ip;
-    if (iph->protocol == IPPROTO_ICMP) {
-        reverse_key.src_port = allocated_port;
-        reverse_key.dst_port = allocated_port;
-    } else {
-        reverse_key.src_port = key.dst_port;
-        reverse_key.dst_port = allocated_port;
-    }
-    reverse_key.protocol = iph->protocol;
-
-    struct nat_entry reverse_entry = {
-        .translated_ip = iph->saddr,
-        .translated_port = key.src_port,
-        .last_seen = bpf_ktime_get_ns(),
-    };
-    bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY);
-
-    update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
-    return apply_nat(skb, &forward_entry, true);
+SEC("tc/egress")
+int tc_nat_egress(struct __sk_buff *skb) {
+    return handle_nat(skb, false);
 }
 
 char _license[] SEC("license") = "GPL";

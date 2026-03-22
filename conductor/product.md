@@ -25,6 +25,7 @@ ebpf-go를 통해 tc 기반의 nat 솔루션 개발
 - **Prometheus Metrics:** 패킷 처리량, 바이트, 활성 세션 수 및 포트 할당 실패 등 실시간 운영 지표를 Prometheus 포맷으로 제공합니다.
 - **Full ICMP Support:** Ping(Echo)뿐만 아니라 Path MTU Discovery에 필수적인 Destination Unreachable, Time Exceeded 등 모든 주요 ICMP 메시지의 변환을 지원합니다.
 - **Connection Tracking & Active Aging:** eBPF 맵을 통한 실시간 세션 추적뿐만 아니라, 유저스페이스의 Garbage Collector가 비활성 세션을 자동으로 감지하고 제거하여 시스템 안정성을 보장합니다.
+- **End-to-End Automated Testing:** 리눅스 네트워크 네임스페이스를 활용하여 가상 네트워크 토폴로지를 구축하고, 실제 트래픽(TCP, UDP, ICMP)을 통한 NAT 기능의 무결성을 자동으로 검증합니다.
 
 ## 5. Primary Use Case
 - **SOHO Gateway Service:** 소규모 사무실이나 가정용 게이트웨이 서비스로 활용되어, 단순하면서도 강력한 네트워크 주소 변환 기능을 제공합니다.

@@ -7,16 +7,16 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md) [7c1c276]
 
 ## Phase 2: Functional Test Scenarios
-- [ ] Task: Implement a 'TCP Connectivity Test' using `nc` or Go's `net` package across namespaces.
-- [ ] Task: Implement a 'UDP Connectivity Test' verifying SNAT translation.
-- [ ] Task: Implement an 'ICMP Echo Test' across namespaces.
-- [ ] Task: Implement a 'PMTU Discovery Test' by sending large packets and verifying ICMP error handling.
-- [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
+- [x] Task: Implement a 'TCP Connectivity Test' using `nc` or Go's `net` package across namespaces. [f2c5771]
+- [x] Task: Implement a 'UDP Connectivity Test' verifying SNAT translation. [f2c5771]
+- [x] Task: Implement an 'ICMP Echo Test' across namespaces. [f2c5771]
+- [x] Task: Implement a 'PMTU Discovery Test' by sending large packets and verifying ICMP error handling. [f2c5771]
+- [x] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md) [f2c5771]
 
 ## Phase 3: Observability & Integration
-- [ ] Task: Integrate metrics verification into the test runner (querying `/metrics` after traffic).
-- [ ] Task: Integrate the black-box tests into the `Makefile` (e.g., `make integration-test`).
-- [ ] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md)
+- [x] Task: Integrate metrics verification into the test runner (querying `/metrics` after traffic). [f2c5771]
+- [x] Task: Integrate the black-box tests into the `Makefile` (e.g., `make integration-test`). [f2c5771]
+- [x] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md) [f2c5771]
 
 ---
 

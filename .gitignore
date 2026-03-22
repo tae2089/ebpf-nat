@@ -1,0 +1,11 @@
+# Go cache directory
+.go-cache/
+
+# Binaries
+bin/
+
+# BPF objects
+*.o
+
+# OS generated files
+.DS_Store

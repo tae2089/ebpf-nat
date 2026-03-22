@@ -13,5 +13,4 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [ ] **Track: End-to-End Black-box Testing**
-*Link: [./tracks/blackbox_testing_20260322/](./tracks/blackbox_testing_20260322/)*
+- [x] [End-to-End Black-box Testing](./tracks/blackbox_testing_20260322/index.md) - Functional verification using network namespaces

@@ -6,6 +6,7 @@
 
 ## 2. Frameworks & Libraries
 - **Networking:** `cilium/ebpf` (ebpf-go) - Go 기반의 현대적인 eBPF 로더 및 관리 라이브러리.
+- **Network Topology:** `vishvananda/netlink`, `vishvananda/netns` - 리눅스 네트워크 네임스페이스 및 인터페이스 관리를 위한 라이브러리.
 - **Environment Detection:** AWS IMDSv2, GCP Metadata Server, 및 `icanhazip.com` 등 외부 API를 활용한 환경 감지 및 Public IP 탐지.
 - **Active Session Management:** 유저스페이스 백그라운드 루틴을 통한 주기적인 eBPF 맵 스캔 및 타임아웃 기반 세션 정리(GC).
 - **Metrics:** `prometheus/client_golang` - Prometheus 메트릭 정의, 수집 및 HTTP 노출을 위한 표준 라이브러리.
@@ -27,5 +28,5 @@
 ## 5. Development & Testing
 - **AI-Assisted Development:** `context7` - AI 에이전트가 `cilium/ebpf` 등 주요 라이브러리의 최신 문서를 실시간으로 조회하고 참조하기 위한 스킬 활용.
 - **Toolchain:** `Go Toolchain` (go build, go test) - 표준 Go 개발 도구 활용.
-- **Automation:** `Makefile` 또는 `Magefile` - 빌드, 테스트, 배포 파이프라인 자동화 (Dockerized BPF compilation 포함).
-- **Testbed:** `Containerized Networking Testbed` - Docker 또는 네트워크 네임스페이스를 활용한 가상 네트워크 환경에서의 기능 및 성능 테스트 수행.
+- **Automation:** `Makefile` 또는 `Magefile` - 빌드, 테스트, 배포 파이프라인 자동화 (Dockerized BPF compilation 및 통합 테스트 포함).
+- **Testbed:** `Network Namespace Integration Test` - `go test`와 연동된 자동화된 블랙박스 테스트 환경 구축.

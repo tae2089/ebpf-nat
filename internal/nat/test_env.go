@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
+	"syscall"
 
+	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
@@ -17,26 +20,23 @@ type TestEnv struct {
 	internalNS netns.NsHandle
 	externalNS netns.NsHandle
 	rootNS     netns.NsHandle
+
+	objs *bpf.NatObjects
 }
 
-func (e *TestEnv) Setup() error {
+func (e *TestEnv) Setup(objs *bpf.NatObjects) error {
 	var err error
+	e.objs = objs
 	e.rootNS, err = netns.Get()
 	if err != nil {
 		return fmt.Errorf("failed to get root ns: %w", err)
 	}
 
 	// 1. Create Namespaces
-	// Note: vishvananda/netns doesn't have a direct 'NewWithName' that also mounts it in /var/run/netns.
-	// We'll create them and we can refer to them by handle. 
-	// To make them "Named" (visible to `ip netns`), we'd need to bind mount them.
-	// For simplicity in this test runner, we'll just use the handles.
-	
 	e.internalNS, err = netns.New()
 	if err != nil {
 		return fmt.Errorf("failed to create internal ns: %w", err)
 	}
-	// Switch back to root to create the next one
 	netns.Set(e.rootNS)
 
 	e.externalNS, err = netns.New()
@@ -45,21 +45,51 @@ func (e *TestEnv) Setup() error {
 	}
 	netns.Set(e.rootNS)
 
-	// 2. Setup Connectivity (veth pairs)
+	// 2. Setup Connectivity
+	// Internal IP: 192.168.1.10 -> GW: 192.168.1.1
 	if err := e.setupVeth("veth-int-root", "veth-int", e.internalNS, "192.168.1.1/24", "192.168.1.10/24"); err != nil {
 		return err
 	}
 
+	// External Target: 10.0.0.10 -> GW: 10.0.0.1
 	if err := e.setupVeth("veth-ext-root", "veth-ext", e.externalNS, "10.0.0.1/24", "10.0.0.10/24"); err != nil {
 		return err
 	}
 
-	// 3. Enable IP Forwarding in Root NS
+	// 3. Enable IP Forwarding and disable rp_filter
 	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644); err != nil {
 		return fmt.Errorf("failed to enable ip_forward: %w", err)
 	}
+	// Allow forwarding in iptables (Docker might have set it to DROP)
+	exec.Command("iptables", "-P", "FORWARD", "ACCEPT").Run()
 
-	// 4. Setup Routing in Internal NS (Default GW)
+	if err := os.WriteFile("/proc/sys/net/ipv4/conf/all/rp_filter", []byte("0"), 0644); err != nil {
+		return fmt.Errorf("failed to disable all rp_filter: %w", err)
+	}
+	if err := os.WriteFile("/proc/sys/net/ipv4/conf/default/rp_filter", []byte("0"), 0644); err != nil {
+		return fmt.Errorf("failed to disable default rp_filter: %w", err)
+	}
+	// Specifically for veth interfaces
+	links := []string{"veth-int-root", "veth-ext-root"}
+	for _, l := range links {
+		path := fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/rp_filter", l)
+		if err := os.WriteFile(path, []byte("0"), 0644); err != nil {
+			// Ignore error if interface not yet created
+		}
+		// Disable offloads to ensure BPF sees clean packets and checksums work
+		exec.Command("ethtool", "-K", l, "rx", "off", "tx", "off", "tso", "off", "gso", "off", "gro", "off").Run()
+	}
+	// Enable proxy_arp on external interface
+	os.WriteFile("/proc/sys/net/ipv4/conf/veth-ext-root/proxy_arp", []byte("1"), 0644)
+
+	// 4. Attach eBPF NAT only to the EXTERNAL interface
+	if e.objs != nil {
+		if err := e.attachBPF("veth-ext-root"); err != nil {
+			return err
+		}
+	}
+
+	// 5. Setup Routing in Internal NS
 	err = e.runInNS(e.internalNS, func() error {
 		link, err := netlink.LinkByName("veth-int")
 		if err != nil {
@@ -75,22 +105,71 @@ func (e *TestEnv) Setup() error {
 		})
 	})
 	if err != nil {
-		return fmt.Errorf("failed to setup routing in internal ns: %w", err)
+		return err
 	}
 
-	// 5. Setup Routing in External NS
-	err = e.runInNS(e.externalNS, func() error {
+	// 6. Setup Routing in External NS
+	return e.runInNS(e.externalNS, func() error {
 		link, err := netlink.LinkByName("veth-ext")
 		if err != nil {
 			return err
 		}
-		return netlink.LinkSetUp(link)
+		if err := netlink.LinkSetUp(link); err != nil {
+			return err
+		}
+		// Return route to internal network via gateway
+		return netlink.RouteAdd(&netlink.Route{
+			Dst:       &net.IPNet{IP: net.ParseIP("192.168.1.0"), Mask: net.CIDRMask(24, 32)},
+			LinkIndex: link.Attrs().Index,
+			Gw:        net.ParseIP("10.0.0.1"),
+		})
 	})
+}
+
+func (e *TestEnv) attachBPF(ifName string) error {
+	link, err := netlink.LinkByName(ifName)
 	if err != nil {
 		return err
 	}
 
-	return netns.Set(e.rootNS)
+	qdisc := &netlink.GenericQdisc{
+		QdiscAttrs: netlink.QdiscAttrs{
+			LinkIndex: link.Attrs().Index,
+			Handle:    netlink.MakeHandle(0xffff, 0),
+			Parent:    netlink.HANDLE_CLSACT,
+		},
+		QdiscType: "clsact",
+	}
+	_ = netlink.QdiscAdd(qdisc)
+
+	filterIngress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_INGRESS,
+			Priority:  1,
+			Protocol:  syscall.ETH_P_ALL,
+		},
+		Fd:           e.objs.TcNatIngress.FD(),
+		DirectAction: true,
+	}
+	if err := netlink.FilterReplace(filterIngress); err != nil {
+		return fmt.Errorf("ingress filter on %s: %w", ifName, err)
+	}
+
+	filterEgress := &netlink.BpfFilter{
+		FilterAttrs: netlink.FilterAttrs{
+			LinkIndex: link.Attrs().Index,
+			Parent:    netlink.HANDLE_MIN_EGRESS,
+			Priority:  1,
+			Protocol:  syscall.ETH_P_ALL,
+		},
+		Fd:           e.objs.TcNatEgress.FD(),
+		DirectAction: true,
+	}
+	if err := netlink.FilterReplace(filterEgress); err != nil {
+		return fmt.Errorf("egress filter on %s: %w", ifName, err)
+	}
+	return nil
 }
 
 func (e *TestEnv) setupVeth(rootName, peerName string, peerNS netns.NsHandle, rootIP, peerIP string) error {
@@ -99,14 +178,10 @@ func (e *TestEnv) setupVeth(rootName, peerName string, peerNS netns.NsHandle, ro
 		PeerName:  peerName,
 	}
 	if err := netlink.LinkAdd(veth); err != nil {
-		return fmt.Errorf("failed to add veth pair %s: %w", rootName, err)
-	}
-
-	// Assign IP to root end
-	rootLink, err := netlink.LinkByName(rootName)
-	if err != nil {
 		return err
 	}
+
+	rootLink, _ := netlink.LinkByName(rootName)
 	addr, _ := netlink.ParseAddr(rootIP)
 	if err := netlink.AddrAdd(rootLink, addr); err != nil {
 		return err
@@ -115,16 +190,11 @@ func (e *TestEnv) setupVeth(rootName, peerName string, peerNS netns.NsHandle, ro
 		return err
 	}
 
-	// Move peer end to namespace
-	peerLink, err := netlink.LinkByName(peerName)
-	if err != nil {
-		return err
-	}
+	peerLink, _ := netlink.LinkByName(peerName)
 	if err := netlink.LinkSetNsFd(peerLink, int(peerNS)); err != nil {
 		return err
 	}
 
-	// Assign IP to peer end in its namespace
 	return e.runInNS(peerNS, func() error {
 		link, err := netlink.LinkByName(peerName)
 		if err != nil {
@@ -162,5 +232,12 @@ func (e *TestEnv) Cleanup() {
 	}
 	if e.rootNS > 0 {
 		e.rootNS.Close()
+	}
+	// Delete interfaces from root
+	links := []string{"veth-int-root", "veth-ext-root"}
+	for _, l := range links {
+		if link, err := netlink.LinkByName(l); err == nil {
+			netlink.LinkDel(link)
+		}
 	}
 }

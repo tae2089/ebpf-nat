@@ -65,7 +65,7 @@ func TestICMPEchoSNAT(t *testing.T) {
 		0x00, 0x01, // sequence number
 	}
 
-	ret, out, err := objs.TcNatProg.Test(packet)
+	ret, out, err := objs.TcNatEgress.Test(packet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestICMPEchoDNAT(t *testing.T) {
 		0x00, 0x01, // sequence number
 	}
 
-	ret, out, err := objs.TcNatProg.Test(packet)
+	ret, out, err := objs.TcNatIngress.Test(packet)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestICMPErrorDNAT(t *testing.T) {
 		0x00, 0x00, 0x00, 0x00, // seq
 	}
 
-	ret, out, err := objs.TcNatProg.Test(packet)
+	ret, out, err := objs.TcNatIngress.Test(packet)
 	if err != nil {
 		t.Fatal(err)
 	}

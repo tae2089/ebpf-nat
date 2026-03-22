@@ -5,7 +5,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
 )
 
 // StartTracePipeLogger reads from /sys/kernel/debug/tracing/trace_pipe and logs to slog.
@@ -35,15 +34,7 @@ func StartTracePipeLogger(ctx context.Context) {
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Format: <task>-<pid> [<cpu>] <flags> <timestamp>: <message>
-		// We can simplify this for the console
-		parts := strings.Split(line, ": ")
-		if len(parts) > 1 {
-			msg := strings.TrimSpace(parts[1])
-			slog.Info("BPF_TRACE", slog.String("msg", msg))
-		} else {
-			slog.Info("BPF_TRACE", slog.String("raw", line))
-		}
+		slog.Info("BPF_TRACE", slog.String("raw", line))
 	}
 
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {

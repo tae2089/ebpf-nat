@@ -90,7 +90,8 @@ type NatSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type NatProgramSpecs struct {
-	TcNatProg *ebpf.ProgramSpec `ebpf:"tc_nat_prog"`
+	TcNatEgress  *ebpf.ProgramSpec `ebpf:"tc_nat_egress"`
+	TcNatIngress *ebpf.ProgramSpec `ebpf:"tc_nat_ingress"`
 }
 
 // NatMapSpecs contains maps before they are loaded into the kernel.
@@ -157,12 +158,14 @@ type NatVariables struct {
 //
 // It can be passed to LoadNatObjects or ebpf.CollectionSpec.LoadAndAssign.
 type NatPrograms struct {
-	TcNatProg *ebpf.Program `ebpf:"tc_nat_prog"`
+	TcNatEgress  *ebpf.Program `ebpf:"tc_nat_egress"`
+	TcNatIngress *ebpf.Program `ebpf:"tc_nat_ingress"`
 }
 
 func (p *NatPrograms) Close() error {
 	return _NatClose(
-		p.TcNatProg,
+		p.TcNatEgress,
+		p.TcNatIngress,
 	)
 }
 

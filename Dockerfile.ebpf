@@ -1,6 +1,10 @@
 FROM golang:1.25
 
-RUN apt-get update && apt-get install -y \
+# apt 캐시 마운트를 사용하여 패키지 다운로드 최소화
+RUN rm -f /etc/apt/apt.conf.d/docker-clean; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
     clang \
     llvm \
     libbpf-dev \

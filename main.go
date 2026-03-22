@@ -194,7 +194,7 @@ func main() {
 			Protocol:  syscall.ETH_P_ALL,
 			Priority:  1,
 		},
-		Fd:           objs.TcNatProg.FD(),
+		Fd:           objs.TcNatIngress.FD(),
 		Name:         "tc_nat_ingress",
 		DirectAction: true,
 	}
@@ -213,7 +213,7 @@ func main() {
 			Protocol:  syscall.ETH_P_ALL,
 			Priority:  1,
 		},
-		Fd:           objs.TcNatProg.FD(),
+		Fd:           objs.TcNatEgress.FD(),
 		Name:         "tc_nat_egress",
 		DirectAction: true,
 	}
