@@ -11,5 +11,4 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [ ] **Track: ICMP NAT Support**
-*Link: [./tracks/icmp_nat_support_20260322/](./tracks/icmp_nat_support_20260322/)*
+- [x] [ICMP NAT Support](./tracks/icmp_nat_support_20260322/index.md) - ICMP Echo/Error translation and ID-NAT support

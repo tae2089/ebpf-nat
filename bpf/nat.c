@@ -48,15 +48,12 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
     void *data     = (void *)(long)skb->data;
 
     struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
-        return TC_ACT_OK;
-
+    if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
     struct iphdr *iph = (void *)(eth + 1);
-    if ((void *)(iph + 1) > data_end)
-        return TC_ACT_OK;
+    if ((void *)(iph + 1) > data_end) return TC_ACT_OK;
 
     __be32 old_ip, new_ip;
-    __be16 old_port, new_port;
+    __be16 old_port_be, new_port_be;
     __u8 protocol = iph->protocol;
 
     if (is_snat) {
@@ -66,63 +63,91 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
         old_ip = iph->daddr;
         new_ip = entry->translated_ip;
     }
-    new_port = entry->translated_port;
+    
+    new_port_be = bpf_htons(entry->translated_port);
 
     if (protocol == IPPROTO_TCP) {
         struct tcphdr *th = (void *)(iph + 1);
-        if ((void *)(th + 1) > data_end)
-            return TC_ACT_OK;
+        if ((void *)(th + 1) > data_end) return TC_ACT_OK;
 
         if (is_snat) {
-            old_port = th->source;
-            th->source = new_port;
+            old_port_be = th->source;
+            th->source = new_port_be;
             iph->saddr = new_ip;
         } else {
-            old_port = th->dest;
-            th->dest = new_port;
+            old_port_be = th->dest;
+            th->dest = new_port_be;
             iph->daddr = new_ip;
         }
         bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
         bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-        bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_port, new_port, sizeof(new_port));
+        bpf_l4_csum_replace(skb, offsetof(struct tcphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
     } else if (protocol == IPPROTO_UDP) {
         struct udphdr *uh = (void *)(iph + 1);
-        if ((void *)(uh + 1) > data_end)
-            return TC_ACT_OK;
+        if ((void *)(uh + 1) > data_end) return TC_ACT_OK;
 
         if (is_snat) {
-            old_port = uh->source;
-            uh->source = new_port;
+            old_port_be = uh->source;
+            uh->source = new_port_be;
             iph->saddr = new_ip;
         } else {
-            old_port = uh->dest;
-            uh->dest = new_port;
+            old_port_be = uh->dest;
+            uh->dest = new_port_be;
             iph->daddr = new_ip;
         }
         bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
         bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-        bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_port, new_port, sizeof(new_port));
+        bpf_l4_csum_replace(skb, offsetof(struct udphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
     } else if (protocol == IPPROTO_ICMP) {
         struct icmphdr *ih = (void *)(iph + 1);
-        if ((void *)(ih + 1) > data_end)
-            return TC_ACT_OK;
+        if ((void *)(ih + 1) > data_end) return TC_ACT_OK;
 
-        // Echo Request (is_snat) or Echo Reply (not is_snat)
         if (ih->type == ICMP_ECHO || ih->type == ICMP_ECHOREPLY) {
-            old_port = ih->un.echo.id;
-            ih->un.echo.id = new_port;
-            
-            if (is_snat) {
-                iph->saddr = new_ip;
-            } else {
-                iph->daddr = new_ip;
-            }
+            old_port_be = ih->un.echo.id;
+            ih->un.echo.id = new_port_be;
+            if (is_snat) iph->saddr = new_ip;
+            else iph->daddr = new_ip;
             
             bpf_l3_csum_replace(skb, offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
-            // ICMP doesn't use pseudo-header for checksum
-            bpf_l4_csum_replace(skb, offsetof(struct icmphdr, checksum), old_port, new_port, sizeof(new_port));
+            bpf_l4_csum_replace(skb, offsetof(struct icmphdr, checksum), old_port_be, new_port_be, sizeof(new_port_be));
         }
     }
+
+    return TC_ACT_OK;
+}
+
+static __always_inline int apply_nat_icmp_error(struct __sk_buff *skb, struct nat_entry *entry) {
+    void *data_end = (void *)(long)skb->data_end;
+    void *data     = (void *)(long)skb->data;
+
+    // Minimum requirement: Eth(14) + OuterIP(20) + ICMP(8) + InnerIP(20) + InnerL4(8) = 70 bytes
+    if (data + 70 > data_end) return TC_ACT_OK;
+
+    struct iphdr *outer_iph = data + 14;
+    struct icmphdr *ih = data + 34;
+    struct iphdr *inner_iph = data + 42;
+    
+    __be32 old_inner_src = inner_iph->saddr;
+    __be32 new_inner_src = entry->translated_ip;
+    __be16 old_inner_port_be = 0;
+    __be16 new_inner_port_be = bpf_htons(entry->translated_port);
+
+    // Only access first 8 bytes of inner L4 header (common for TCP/UDP in ICMP errors)
+    __be16 *inner_ports = data + 62;
+    old_inner_port_be = inner_ports[0]; // Source port is first 2 bytes
+    inner_ports[0] = new_inner_port_be;
+
+    inner_iph->saddr = new_inner_src;
+    __be32 old_outer_dst = outer_iph->daddr;
+    __be32 new_outer_dst = entry->translated_ip;
+    outer_iph->daddr = new_outer_dst;
+
+    // Checksums
+    bpf_l3_csum_replace(skb, 42 + offsetof(struct iphdr, check), old_inner_src, new_inner_src, sizeof(new_inner_src));
+    bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_outer_dst, new_outer_dst, sizeof(new_outer_dst));
+    
+    bpf_l4_csum_replace(skb, 34 + offsetof(struct icmphdr, checksum), old_inner_src, new_inner_src, sizeof(new_inner_src));
+    bpf_l4_csum_replace(skb, 34 + offsetof(struct icmphdr, checksum), old_inner_port_be, new_inner_port_be, sizeof(new_inner_port_be));
 
     return TC_ACT_OK;
 }
@@ -133,15 +158,10 @@ int tc_nat_prog(struct __sk_buff *skb) {
     void *data     = (void *)(long)skb->data;
 
     struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
-        return TC_ACT_OK;
-
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
-        return TC_ACT_OK;
-
+    if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
+    if (eth->h_proto != bpf_htons(ETH_P_IP)) return TC_ACT_OK;
     struct iphdr *iph = (void *)(eth + 1);
-    if ((void *)(iph + 1) > data_end)
-        return TC_ACT_OK;
+    if ((void *)(iph + 1) > data_end) return TC_ACT_OK;
 
     struct nat_key key = {0};
     key.src_ip   = iph->saddr;
@@ -150,70 +170,73 @@ int tc_nat_prog(struct __sk_buff *skb) {
 
     if (iph->protocol == IPPROTO_TCP) {
         struct tcphdr *th = (void *)(iph + 1);
-        if ((void *)(th + 1) > data_end)
-            return TC_ACT_OK;
-        key.src_port = th->source;
-        key.dst_port = th->dest;
+        if ((void *)(th + 1) > data_end) return TC_ACT_OK;
+        key.src_port = bpf_ntohs(th->source);
+        key.dst_port = bpf_ntohs(th->dest);
     } else if (iph->protocol == IPPROTO_UDP) {
         struct udphdr *uh = (void *)(iph + 1);
-        if ((void *)(uh + 1) > data_end)
-            return TC_ACT_OK;
-        key.src_port = uh->source;
-        key.dst_port = uh->dest;
+        if ((void *)(uh + 1) > data_end) return TC_ACT_OK;
+        key.src_port = bpf_ntohs(uh->source);
+        key.dst_port = bpf_ntohs(uh->dest);
     } else if (iph->protocol == IPPROTO_ICMP) {
         struct icmphdr *ih = (void *)(iph + 1);
-        if ((void *)(ih + 1) > data_end)
-            return TC_ACT_OK;
+        if ((void *)(ih + 1) > data_end) return TC_ACT_OK;
         
         if (ih->type == ICMP_ECHO || ih->type == ICMP_ECHOREPLY) {
-            key.src_port = ih->un.echo.id;
-            key.dst_port = ih->un.echo.id; // ICMP doesn't have dst_port, use ID for both
+            key.src_port = bpf_ntohs(ih->un.echo.id);
+            key.dst_port = bpf_ntohs(ih->un.echo.id);
+        } else if (ih->type == ICMP_DEST_UNREACH || ih->type == ICMP_TIME_EXCEEDED) {
+            struct iphdr *inner_iph = (void *)(ih + 1);
+            if ((void *)(inner_iph + 1) > data_end) return TC_ACT_OK;
+
+            struct nat_key lookup_key = {0};
+            lookup_key.src_ip = inner_iph->daddr;
+            lookup_key.dst_ip = inner_iph->saddr;
+            lookup_key.protocol = inner_iph->protocol;
+
+            // Only need first 4 bytes of inner L4 header for ports
+            if (data + 62 + 4 > data_end) return TC_ACT_OK;
+            __be16 *inner_ports = data + 62;
+            lookup_key.src_port = bpf_ntohs(inner_ports[1]); // inner_th->dest
+            lookup_key.dst_port = bpf_ntohs(inner_ports[0]); // inner_th->source
+
+            struct nat_entry *inner_entry = bpf_map_lookup_elem(&reverse_nat_map, &lookup_key);
+            if (inner_entry) {
+                return apply_nat_icmp_error(skb, inner_entry);
+            }
+            return TC_ACT_OK;
         } else {
-            // Error messages (Type 3, 11 etc) will be handled in Phase 2
             return TC_ACT_OK;
         }
     } else {
         return TC_ACT_OK;
     }
 
-    // 1. Check existing conntrack session (Forward: Original -> Translated)
     struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
     if (entry) {
         entry->last_seen = bpf_ktime_get_ns();
         return apply_nat(skb, entry, true);
     }
 
-    // 2. Check reverse NAT session (Return: Translated -> Original)
     entry = bpf_map_lookup_elem(&reverse_nat_map, &key);
     if (entry) {
         entry->last_seen = bpf_ktime_get_ns();
         return apply_nat(skb, entry, false);
     }
 
-    // 3. Static DNAT rules
     entry = bpf_map_lookup_elem(&dnat_rules, &key);
     if (entry) {
         entry->last_seen = bpf_ktime_get_ns();
         return apply_nat(skb, entry, false);
     }
 
-    // 4. Dynamic SNAT (Masquerading)
     __u32 zero = 0;
     struct snat_config *cfg = bpf_map_lookup_elem(&snat_config_map, &zero);
-    if (!cfg || cfg->external_ip == 0) {
-        return TC_ACT_OK;
-    }
+    if (!cfg || cfg->external_ip == 0) return TC_ACT_OK;
 
-    // Boundary check again before accessing iph
-    if ((void *)(iph + 1) > data_end)
-        return TC_ACT_OK;
+    if ((void *)(iph + 1) > data_end) return TC_ACT_OK;
+    if (iph->saddr == cfg->external_ip) return TC_ACT_OK;
 
-    // Basic heuristic: SNAT if source IP is different from external IP
-    if (iph->saddr == cfg->external_ip) {
-        return TC_ACT_OK;
-    }
-
-    // Port/ID Allocation
     __u32 hash = bpf_get_prandom_u32();
     __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
     __u16 allocated_port = 0;
@@ -222,32 +245,28 @@ int tc_nat_prog(struct __sk_buff *skb) {
     for (int i = 0; i < PORT_SCAN_LIMIT; i++) {
         __u32 test_port_32 = EPHEMERAL_PORT_START + ((start_port - EPHEMERAL_PORT_START + i) % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
         __u16 test_port = (__u16)test_port_32;
+        __be16 test_port_be = bpf_htons(test_port);
 
-        // Key for return traffic to check collision
         struct nat_key rev_check_key = {0};
         rev_check_key.src_ip = iph->daddr;
         rev_check_key.dst_ip = cfg->external_ip;
-        
         if (iph->protocol == IPPROTO_ICMP) {
-            rev_check_key.src_port = bpf_htons(test_port); // Expected ID in reply
-            rev_check_key.dst_port = bpf_htons(test_port);
+            rev_check_key.src_port = test_port;
+            rev_check_key.dst_port = test_port;
         } else {
             rev_check_key.src_port = key.dst_port;
-            rev_check_key.dst_port = bpf_htons(test_port);
+            rev_check_key.dst_port = test_port;
         }
         rev_check_key.protocol = iph->protocol;
 
         if (!bpf_map_lookup_elem(&reverse_nat_map, &rev_check_key)) {
-            allocated_port = bpf_htons(test_port);
+            allocated_port = test_port;
             break;
         }
     }
 
-    if (allocated_port == 0) {
-        return TC_ACT_OK; // No port/ID available
-    }
+    if (allocated_port == 0) return TC_ACT_OK;
 
-    // Create conntrack entries
     struct nat_entry forward_entry = {
         .translated_ip = cfg->external_ip,
         .translated_port = allocated_port,
@@ -258,7 +277,6 @@ int tc_nat_prog(struct __sk_buff *skb) {
     struct nat_key reverse_key = {0};
     reverse_key.src_ip = iph->daddr;
     reverse_key.dst_ip = cfg->external_ip;
-    
     if (iph->protocol == IPPROTO_ICMP) {
         reverse_key.src_port = allocated_port;
         reverse_key.dst_port = allocated_port;

@@ -21,12 +21,21 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
+	debug := flag.Bool("debug", false, "Enable debug logging and BPF tracing")
 	ipDetectType := flag.String("ip-detect-type", "", "IP detection type (generic, aws, gcp, auto)")
 	ipDetectInterval := flag.Duration("ip-detect-interval", 5*time.Minute, "IP detection interval")
 	gcIntervalStr := flag.String("gc-interval", "", "Garbage collection interval (e.g., 1m)")
 	tcpTimeoutStr := flag.String("tcp-timeout", "", "TCP session timeout (e.g., 24h)")
 	udpTimeoutStr := flag.String("udp-timeout", "", "UDP session timeout (e.g., 5m)")
 	flag.Parse()
+
+	// Set log level
+	logLevel := slog.LevelInfo
+	if *debug {
+		logLevel = slog.LevelDebug
+	}
+	opts := &slog.HandlerOptions{Level: logLevel}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, opts)))
 
 	// Load configuration
 	cfg, err := config.LoadConfig(*configPath)
@@ -97,6 +106,10 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if *debug {
+		go bpf.StartTracePipeLogger(ctx)
+	}
 
 	// Start background tasks
 	go natMgr.RunBackgroundTasks(ctx, *ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)

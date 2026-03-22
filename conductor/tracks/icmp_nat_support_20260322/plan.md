@@ -1,15 +1,15 @@
 # Plan: ICMP NAT Support
 
 ## Phase 1: eBPF Data Plane Support (Echo & ID NAT)
-- [ ] Task: Update `bpf/nat.c` to parse ICMP headers.
-- [ ] Task: Implement dynamic ID allocation for ICMP Echo Request (using the existing port allocation logic).
-- [ ] Task: Implement SNAT for outgoing ICMP Echo Request (IP + ID translation).
-- [ ] Task: Implement DNAT for incoming ICMP Echo Reply (IP + ID translation).
-- [ ] Task: Implement ICMP checksum recalculation logic.
-- [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
+- [x] Task: Update `bpf/nat.c` to parse ICMP headers. [5b2f485]
+- [x] Task: Implement dynamic ID allocation for ICMP Echo Request (using the existing port allocation logic). [5b2f485]
+- [x] Task: Implement SNAT for outgoing ICMP Echo Request (IP + ID translation). [5b2f485]
+- [x] Task: Implement DNAT for incoming ICMP Echo Reply (IP + ID translation). [5b2f485]
+- [x] Task: Implement ICMP checksum recalculation logic. [5b2f485]
+- [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md) [5b2f485]
 
 ## Phase 2: eBPF Data Plane Support (ICMP Errors & PMTU)
-- [ ] Task: Implement parsing of "inner" IP and L4 headers for ICMP Error messages (Type 3, 11).
+- [~] Task: Implement parsing of "inner" IP and L4 headers for ICMP Error messages (Type 3, 11).
 - [ ] Task: Implement translation of inner headers to match the conntrack session.
 - [ ] Task: Implement translation of the outer IP header for ICMP Error messages.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)

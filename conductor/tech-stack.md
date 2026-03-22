@@ -18,7 +18,10 @@
 
 ## 4. Observability & Monitoring
 - **Metrics Export:** `Prometheus` - 커널 레벨에서 수집된 패킷 처리 지표(패킷 수, 바이트 수, 드롭 횟수 등)를 외부에 노출합니다.
-- **Logging:** 구조화된 로그(slog)를 통해 시스템 상태와 중요 이벤트를 투명하게 기록합니다.
+- **Logging & Tracing (Mandatory):** 
+  - **Structured Logging:** `slog`를 사용하여 유저스페이스의 모든 주요 결정을 기록합니다.
+  - **Kernel Tracing:** `bpf_printk`를 사용하여 데이터 패킷의 변환 과정을 실시간으로 추적합니다.
+  - **Unified Debugging:** 개발 및 트러블슈팅 시 `--debug` 플래그를 통한 `trace_pipe` 통합 로그 출력을 필수로 활용합니다.
 
 ## 5. Development & Testing
 - **AI-Assisted Development:** `context7` - AI 에이전트가 `cilium/ebpf` 등 주요 라이브러리의 최신 문서를 실시간으로 조회하고 참조하기 위한 스킬 활용.

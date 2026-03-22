@@ -19,7 +19,9 @@ build: generate
 	GOOS=linux GOARCH=arm64 go build -o bin/ebpf-nat-arm64 main.go
 
 test: generate
-	docker run --rm --privileged -v $(shell pwd):/app -w /app $(BUILDER_IMAGE) \
+	docker run --rm --privileged \
+		-v /sys/kernel/debug:/sys/kernel/debug \
+		-v $(shell pwd):/app -w /app $(BUILDER_IMAGE) \
 		go test -v ./...
 
 clean:
