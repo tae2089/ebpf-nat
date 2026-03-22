@@ -9,15 +9,18 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md) [5b2f485]
 
 ## Phase 2: eBPF Data Plane Support (ICMP Errors & PMTU)
-- [~] Task: Implement parsing of "inner" IP and L4 headers for ICMP Error messages (Type 3, 11).
-- [ ] Task: Implement translation of inner headers to match the conntrack session.
-- [ ] Task: Implement translation of the outer IP header for ICMP Error messages.
-- [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
+- [x] Task: Implement parsing of "inner" IP and L4 headers for ICMP Error messages (Type 3, 11). [6effea1]
+- [x] Task: Implement translation of inner headers to match the conntrack session. [6effea1]
+- [x] Task: Implement translation of the outer IP header for ICMP Error messages. [6effea1]
+- [x] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md) [6effea1]
 
 ## Phase 3: Control Plane & Verification
-- [ ] Task: Update `internal/nat/manager.go` to handle ICMP protocol in configuration (if needed).
-- [ ] Task: Extend automated tests to include ICMP packet simulations.
-- [ ] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md)
+- [x] Task: Update `internal/nat/manager.go` to handle ICMP protocol in configuration (if needed). [6effea1]
+- [x] Task: Extend automated tests to include ICMP packet simulations. [6effea1]
+- [x] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md) [6effea1]
+
+## Phase: Review Fixes
+- [x] Task: Apply review suggestions [6effea1]
 
 ---
 
