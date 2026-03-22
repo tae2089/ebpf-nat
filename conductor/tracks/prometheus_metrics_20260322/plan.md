@@ -16,7 +16,7 @@
 - [x] Task: Update `internal/config` to support metrics configuration (port, enabled). [a29fc51]
 - [x] Task: Implement the HTTP server in `main.go` or a dedicated service to expose `/metrics`. [a29fc51]
 - [x] Task: Add CLI flags for metrics port and enable/disable. [a29fc51]
-- [ ] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md) [a29fc51]
 
 ---
 
