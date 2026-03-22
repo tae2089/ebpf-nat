@@ -16,8 +16,15 @@ type Config struct {
 	GCInterval   string `yaml:"gc_interval,omitempty"`    // e.g., "1m"
 	TCPTimeout   string `yaml:"tcp_timeout,omitempty"`    // e.g., "24h"
 	UDPTimeout   string `yaml:"udp_timeout,omitempty"`    // e.g., "5m"
+	Metrics      MetricsConfig `yaml:"metrics"`
 	SNAT         []Rule `yaml:"snat"`
 	DNAT         []Rule `yaml:"dnat"`
+}
+
+type MetricsConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Address string `yaml:"address"`
+	Port    int    `yaml:"port"`
 }
 
 type Rule struct {

@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +17,9 @@ import (
 	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/imtaebin/ebpf-nat/internal/config"
 	"github.com/imtaebin/ebpf-nat/internal/nat"
+	"github.com/imtaebin/ebpf-nat/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/vishvananda/netlink"
 	"github.com/cilium/ebpf/rlimit"
 )
@@ -27,6 +32,8 @@ func main() {
 	gcIntervalStr := flag.String("gc-interval", "", "Garbage collection interval (e.g., 1m)")
 	tcpTimeoutStr := flag.String("tcp-timeout", "", "TCP session timeout (e.g., 24h)")
 	udpTimeoutStr := flag.String("udp-timeout", "", "UDP session timeout (e.g., 5m)")
+	metricsEnabled := flag.Bool("metrics-enabled", false, "Enable Prometheus metrics")
+	metricsPort := flag.Int("metrics-port", 0, "Prometheus metrics port")
 	flag.Parse()
 
 	// Set log level
@@ -61,6 +68,12 @@ func main() {
 	}
 	if *udpTimeoutStr != "" {
 		cfg.UDPTimeout = *udpTimeoutStr
+	}
+	if *metricsEnabled {
+		cfg.Metrics.Enabled = true
+	}
+	if *metricsPort != 0 {
+		cfg.Metrics.Port = *metricsPort
 	}
 
 	// Parse duration settings with defaults
@@ -113,6 +126,42 @@ func main() {
 
 	// Start background tasks
 	go natMgr.RunBackgroundTasks(ctx, *ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)
+
+	// Start metrics server if enabled
+	if cfg.Metrics.Enabled {
+		if cfg.Metrics.Port == 0 {
+			cfg.Metrics.Port = 9090
+		}
+		if cfg.Metrics.Address == "" {
+			cfg.Metrics.Address = "0.0.0.0"
+		}
+
+		metrics.NewScraper(&objs, prometheus.DefaultRegisterer)
+		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Address, cfg.Metrics.Port)
+
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+
+		server := &http.Server{
+			Addr:    addr,
+			Handler: mux,
+		}
+
+		go func() {
+			slog.Info("Starting metrics server", slog.String("addr", addr))
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("Metrics server failed", slog.Any("error", err))
+			}
+		}()
+
+		go func() {
+			<-ctx.Done()
+			slog.Info("Shutting down metrics server")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			server.Shutdown(shutdownCtx)
+		}()
+	}
 
 	// Find the network interface
 	link, err := netlink.LinkByName(cfg.Interface)
