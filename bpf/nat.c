@@ -43,6 +43,30 @@ struct {
     __type(value, struct snat_config);
 } snat_config_map SEC(".maps");
 
+// Global metrics map
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, struct metrics_key);
+    __type(value, struct metrics_value);
+} metrics_map SEC(".maps");
+
+static __always_inline void update_metrics(__u8 protocol, __u8 direction, __u8 action, __u32 bytes) {
+    struct metrics_key key = {
+        .protocol = protocol,
+        .direction = direction,
+        .action = action,
+    };
+    struct metrics_value *val = bpf_map_lookup_elem(&metrics_map, &key);
+    if (val) {
+        val->packets++;
+        val->bytes += bytes;
+    } else {
+        struct metrics_value new_val = { .packets = 1, .bytes = bytes };
+        bpf_map_update_elem(&metrics_map, &key, &new_val, BPF_ANY);
+    }
+}
+
 static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *entry, bool is_snat) {
     void *data_end = (void *)(long)skb->data_end;
     void *data     = (void *)(long)skb->data;
@@ -64,6 +88,7 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
         new_ip = entry->translated_ip;
     }
     
+    // translated_port is Host Order in entry, must convert to Network Order for packet
     new_port_be = bpf_htons(entry->translated_port);
 
     if (protocol == IPPROTO_TCP) {
@@ -146,8 +171,11 @@ static __always_inline int apply_nat_icmp_error(struct __sk_buff *skb, struct na
     bpf_l3_csum_replace(skb, 42 + offsetof(struct iphdr, check), old_inner_src, new_inner_src, sizeof(new_inner_src));
     bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_outer_dst, new_outer_dst, sizeof(new_outer_dst));
     
+    // ICMP checksum covers the payload (inner headers)
     bpf_l4_csum_replace(skb, 34 + offsetof(struct icmphdr, checksum), old_inner_src, new_inner_src, sizeof(new_inner_src));
-    bpf_l4_csum_replace(skb, 34 + offsetof(struct icmphdr, checksum), old_inner_port_be, new_inner_port_be, sizeof(new_inner_port_be));
+    if (old_inner_port_be != 0) {
+        bpf_l4_csum_replace(skb, 34 + offsetof(struct icmphdr, checksum), old_inner_port_be, new_inner_port_be, sizeof(new_inner_port_be));
+    }
 
     return TC_ACT_OK;
 }
@@ -159,7 +187,10 @@ int tc_nat_prog(struct __sk_buff *skb) {
 
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) return TC_ACT_OK;
-    if (eth->h_proto != bpf_htons(ETH_P_IP)) return TC_ACT_OK;
+    if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+        update_metrics(0, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
+        return TC_ACT_OK;
+    }
     struct iphdr *iph = (void *)(eth + 1);
     if ((void *)(iph + 1) > data_end) return TC_ACT_OK;
 
@@ -202,40 +233,53 @@ int tc_nat_prog(struct __sk_buff *skb) {
 
             struct nat_entry *inner_entry = bpf_map_lookup_elem(&reverse_nat_map, &lookup_key);
             if (inner_entry) {
+                update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
                 return apply_nat_icmp_error(skb, inner_entry);
             }
+            update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
             return TC_ACT_OK;
         } else {
+            update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
             return TC_ACT_OK;
         }
     } else {
+        update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
         return TC_ACT_OK;
     }
 
     struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
     if (entry) {
         entry->last_seen = bpf_ktime_get_ns();
+        update_metrics(key.protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
         return apply_nat(skb, entry, true);
     }
 
     entry = bpf_map_lookup_elem(&reverse_nat_map, &key);
     if (entry) {
         entry->last_seen = bpf_ktime_get_ns();
+        update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
         return apply_nat(skb, entry, false);
     }
 
     entry = bpf_map_lookup_elem(&dnat_rules, &key);
     if (entry) {
         entry->last_seen = bpf_ktime_get_ns();
+        update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
         return apply_nat(skb, entry, false);
     }
 
     __u32 zero = 0;
     struct snat_config *cfg = bpf_map_lookup_elem(&snat_config_map, &zero);
-    if (!cfg || cfg->external_ip == 0) return TC_ACT_OK;
+    if (!cfg || cfg->external_ip == 0) {
+        update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
+        return TC_ACT_OK;
+    }
 
     if ((void *)(iph + 1) > data_end) return TC_ACT_OK;
-    if (iph->saddr == cfg->external_ip) return TC_ACT_OK;
+    if (iph->saddr == cfg->external_ip) {
+        update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_PASSED, skb->len);
+        return TC_ACT_OK;
+    }
 
     __u32 hash = bpf_get_prandom_u32();
     __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
@@ -265,7 +309,10 @@ int tc_nat_prog(struct __sk_buff *skb) {
         }
     }
 
-    if (allocated_port == 0) return TC_ACT_OK;
+    if (allocated_port == 0) {
+        update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_ALLOC_FAIL, skb->len);
+        return TC_ACT_OK;
+    }
 
     struct nat_entry forward_entry = {
         .translated_ip = cfg->external_ip,
@@ -293,6 +340,7 @@ int tc_nat_prog(struct __sk_buff *skb) {
     };
     bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY);
 
+    update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
     return apply_nat(skb, &forward_entry, true);
 }
 

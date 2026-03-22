@@ -12,6 +12,19 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type NatMetricsKey struct {
+	_         structs.HostLayout
+	Protocol  uint8
+	Direction uint8
+	Action    uint8
+}
+
+type NatMetricsValue struct {
+	_       structs.HostLayout
+	Packets uint64
+	Bytes   uint64
+}
+
 type NatNatEntry struct {
 	_              structs.HostLayout
 	TranslatedIp   uint32
@@ -86,6 +99,7 @@ type NatProgramSpecs struct {
 type NatMapSpecs struct {
 	ConntrackMap  *ebpf.MapSpec `ebpf:"conntrack_map"`
 	DnatRules     *ebpf.MapSpec `ebpf:"dnat_rules"`
+	MetricsMap    *ebpf.MapSpec `ebpf:"metrics_map"`
 	ReverseNatMap *ebpf.MapSpec `ebpf:"reverse_nat_map"`
 	SnatConfigMap *ebpf.MapSpec `ebpf:"snat_config_map"`
 }
@@ -118,6 +132,7 @@ func (o *NatObjects) Close() error {
 type NatMaps struct {
 	ConntrackMap  *ebpf.Map `ebpf:"conntrack_map"`
 	DnatRules     *ebpf.Map `ebpf:"dnat_rules"`
+	MetricsMap    *ebpf.Map `ebpf:"metrics_map"`
 	ReverseNatMap *ebpf.Map `ebpf:"reverse_nat_map"`
 	SnatConfigMap *ebpf.Map `ebpf:"snat_config_map"`
 }
@@ -126,6 +141,7 @@ func (m *NatMaps) Close() error {
 	return _NatClose(
 		m.ConntrackMap,
 		m.DnatRules,
+		m.MetricsMap,
 		m.ReverseNatMap,
 		m.SnatConfigMap,
 	)

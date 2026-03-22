@@ -25,6 +25,26 @@ struct snat_config {
     __u32 external_ip;
 };
 
+// Metrics structures
+#define DIRECTION_INGRESS 0
+#define DIRECTION_EGRESS  1
+
+#define ACTION_TRANSLATED 0
+#define ACTION_DROPPED    1
+#define ACTION_PASSED      2
+#define ACTION_ALLOC_FAIL 3
+
+struct metrics_key {
+    __u8 protocol;
+    __u8 direction;
+    __u8 action;
+};
+
+struct metrics_value {
+    __u64 packets;
+    __u64 bytes;
+};
+
 // Minimal ICMP header for eBPF
 struct icmphdr {
     __u8		type;
