@@ -1,5 +1,7 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+trap 'echo "Cleaning up..."; docker compose -f docker-compose.perf.yaml down' EXIT
 
 echo "Starting Performance Testbed..."
 docker compose -f docker-compose.perf.yaml up -d --build
@@ -23,6 +25,3 @@ docker exec client wrk -t4 -c100 -d10s http://172.30.0.2/ | tee perf-rps.log
 
 echo "3. Latency Test (Ping)"
 docker exec client ping -c 10 172.30.0.2 | tee perf-latency.log
-
-echo "Cleaning up..."
-docker compose -f docker-compose.perf.yaml down
