@@ -8,6 +8,7 @@
 - **Networking:** `cilium/ebpf` (ebpf-go) - Go 기반의 현대적인 eBPF 로더 및 관리 라이브러리.
 - **Environment Detection:** AWS IMDSv2, GCP Metadata Server, 및 `icanhazip.com` 등 외부 API를 활용한 환경 감지 및 Public IP 탐지.
 - **Active Session Management:** 유저스페이스 백그라운드 루틴을 통한 주기적인 eBPF 맵 스캔 및 타임아웃 기반 세션 정리(GC).
+- **Metrics:** `prometheus/client_golang` - Prometheus 메트릭 정의, 수집 및 HTTP 노출을 위한 표준 라이브러리.
 - **Error Handling:** 
   - **slog:** Go 표준 라이브러리의 구조화된 로깅 패키지.
   - **github.com/tae2089/trace:** 에러 트래킹 및 트레이싱을 위한 외부 라이브러리 활용.
