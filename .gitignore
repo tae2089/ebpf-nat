@@ -12,3 +12,6 @@ bin/
 
 # Git worktrees
 .worktrees/
+
+# Test logs
+*.log

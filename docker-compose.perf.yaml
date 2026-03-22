@@ -1,8 +1,10 @@
 services:
   nat-gateway:
+    container_name: nat-gateway
     build:
       context: .
       dockerfile: perf/gateway/Dockerfile
+    entrypoint: ["sleep", "infinity"]
     privileged: true
     deploy:
       resources:
@@ -20,6 +22,7 @@ services:
       - net.ipv4.ip_forward=1
 
   client:
+    container_name: client
     build: ./perf/client
     networks:
       net-internal:
@@ -28,17 +31,22 @@ services:
       - NET_ADMIN
 
   server:
+    container_name: server
     build: ./perf/server
     networks:
       net-external:
         ipv4_address: 172.30.0.2
+    cap_add:
+      - NET_ADMIN
 
 networks:
   net-internal:
     ipam:
       config:
         - subnet: 172.20.0.0/24
+          gateway: 172.20.0.254
   net-external:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+          gateway: 172.30.0.254
