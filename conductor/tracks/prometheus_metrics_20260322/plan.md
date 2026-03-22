@@ -4,7 +4,7 @@
 - [x] Task: Update `bpf/nat.h` to include a metrics structure and a new BPF map (`metrics_map`) for global counters. [8b2d419]
 - [x] Task: Update `bpf/nat.c` to increment packet and byte counters at key processing points (ingress/egress, translate/drop/pass). [8b2d419]
 - [x] Task: Implement port allocation failure tracking in `bpf/nat.c`. [8b2d419]
-- [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md) [ac14405]
 
 ## Phase 2: Go User-Space Metrics Collection
 - [ ] Task: Create `internal/metrics` package to interface with the eBPF `metrics_map`.
