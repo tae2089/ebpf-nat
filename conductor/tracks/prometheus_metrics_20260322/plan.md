@@ -10,7 +10,7 @@
 - [x] Task: Create `internal/metrics` package to interface with the eBPF `metrics_map`. [0182b1d]
 - [x] Task: Implement a 'Scraper' that reads `metrics_map` and the session maps (`conntrack_map`) to provide gauge and counter data. [0182b1d]
 - [x] Task: Initialize standard Prometheus registers using `prometheus/client_golang`. [0182b1d]
-- [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md) [b81b9eb]
 
 ## Phase 3: HTTP Server & Configuration
 - [ ] Task: Update `internal/config` to support metrics configuration (port, enabled).
