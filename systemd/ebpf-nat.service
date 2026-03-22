@@ -1,0 +1,30 @@
+[Unit]
+Description=eBPF-based High Performance NAT Gateway
+Documentation=https://github.com/imtaebin/ebpf-nat
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Load environment variables
+EnvironmentFile=-/etc/default/ebpf-nat
+
+# Wait a little bit for the interface to be fully up
+ExecStartPre=/bin/sleep 2
+
+# Execute the binary with flags from the environment file
+ExecStart=/usr/local/bin/ebpf-nat \
+    --interface ${EBPF_NAT_INTERFACE} \
+    --masquerade=${EBPF_NAT_MASQUERADE} \
+    --ip-detect-type ${EBPF_NAT_IP_DETECT_TYPE} \
+    --metrics-enabled=${EBPF_NAT_METRICS_ENABLED} \
+    ${EBPF_NAT_EXTRA_FLAGS}
+
+Restart=on-failure
+RestartSec=5
+# eBPF requires memlock and CAP_NET_ADMIN/CAP_SYS_ADMIN
+LimitMEMLOCK=infinity
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF CAP_PERFMON
+
+[Install]
+WantedBy=multi-user.target

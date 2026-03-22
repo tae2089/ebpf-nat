@@ -1,0 +1,21 @@
+# /etc/default/ebpf-nat
+# Configuration file for ebpf-nat systemd service
+
+# The network interface to attach the eBPF NAT to. (Required)
+# E.g., eth0, ens5
+EBPF_NAT_INTERFACE="eth0"
+
+# Enable dynamic SNAT (masquerading). true or false
+EBPF_NAT_MASQUERADE="true"
+
+# Static external IP for SNAT (overrides detection). Leave empty to auto-detect.
+EBPF_NAT_EXTERNAL_IP=""
+
+# IP detection type: auto, generic, aws, gcp
+EBPF_NAT_IP_DETECT_TYPE="auto"
+
+# Enable Prometheus metrics
+EBPF_NAT_METRICS_ENABLED="true"
+
+# Additional flags can be added here
+EBPF_NAT_EXTRA_FLAGS=""
