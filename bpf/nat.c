@@ -337,6 +337,25 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
         if (!cfg || cfg->external_ip == 0) return TC_ACT_OK;
         if (iph->saddr == cfg->external_ip) return TC_ACT_OK;
 
+        // Security: Anti-Spoofing (Source Address Verification)
+        // If internal_net is configured, only allow packets from that subnet
+        if (cfg->internal_mask != 0) {
+            if ((iph->saddr & cfg->internal_mask) != cfg->internal_net) {
+                update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_DROPPED, skb->len);
+                return TC_ACT_SHOT;
+            }
+        }
+
+        // Security: For TCP, only create sessions on SYN packets
+        if (iph->protocol == IPPROTO_TCP) {
+            struct tcphdr *th = (void *)(iph + 1);
+            if ((void *)(th + 1) > data_end) return TC_ACT_OK;
+            if (!(th->syn) || th->ack) {
+                // Not a SYN packet or has ACK (not a new connection attempt)
+                return TC_ACT_OK;
+            }
+        }
+
         // Dynamic SNAT allocation logic with power-of-two randomized probe
         __u32 hash = bpf_get_prandom_u32();
         __u16 allocated_port = 0;

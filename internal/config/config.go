@@ -4,6 +4,7 @@ type Config struct {
 	Interface    string
 	Masquerade   bool
 	ExternalIP   string
+	InternalNet  string // e.g., "192.168.1.0/24" for SAV
 	IPDetectType string // generic, aws, gcp, auto
 	GCInterval   string // e.g., "1m"
 	TCPTimeout   string // e.g., "24h"

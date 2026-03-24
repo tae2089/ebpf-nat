@@ -13,18 +13,24 @@ struct nat_key {
     __u16 src_port;
     __u16 dst_port;
     __u8  protocol;
-};
+    __u8  pad[3]; // Padding for 8-byte alignment
+} __attribute__((aligned(8)));
 
 struct nat_entry {
     __u32 translated_ip;
     __u16 translated_port;
+    __u16 pad; // Padding
     __u64 last_seen; // For session aging
-};
+} __attribute__((aligned(8)));
 
 struct snat_config {
     __u32 external_ip;
+    __u32 internal_net;
+    __u32 internal_mask;
     __u16 max_mss;
-};
+    __u16 pad;
+} __attribute__((aligned(8)));
+
 
 // Metrics structures
 #define DIRECTION_INGRESS 0

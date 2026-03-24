@@ -24,14 +24,16 @@ var (
 )
 
 type Manager struct {
-	objects    *bpf.NatObjects
-	ipDetector ipdetect.Detector
-	privateIP  net.IP
-	tcpTimeout time.Duration
-	udpTimeout time.Duration
-	maxMSS     uint16
-	mu         sync.RWMutex
-	isStopping bool
+	objects      *bpf.NatObjects
+	ipDetector   ipdetect.Detector
+	privateIP    net.IP
+	tcpTimeout   time.Duration
+	udpTimeout   time.Duration
+	maxMSS       uint16
+	internalNet  uint32
+	internalMask uint32
+	mu           sync.RWMutex
+	isStopping   bool
 }
 
 func NewManager(objs *bpf.NatObjects) *Manager {
@@ -70,6 +72,16 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 		}
 	}
 	m.maxMSS = cfg.MaxMSS
+
+	if cfg.InternalNet != "" {
+		_, ipnet, err := net.ParseCIDR(cfg.InternalNet)
+		if err != nil {
+			slog.Warn("Failed to parse internal_net CIDR", slog.String("value", cfg.InternalNet), slog.Any("error", err))
+		} else {
+			m.internalNet = ipToUint32(ipnet.IP)
+			m.internalMask = binary.LittleEndian.Uint32(ipnet.Mask)
+		}
+	}
 
 	// Find private IP of the interface for fallback
 	iface, err := net.InterfaceByName(cfg.Interface)
@@ -148,13 +160,17 @@ func (m *Manager) SetSNATConfig(externalIP net.IP, maxMSS uint16) error {
 		m.mu.RUnlock()
 		return ErrManagerStopping
 	}
+	internalNet := m.internalNet
+	internalMask := m.internalMask
 	m.mu.RUnlock()
 
 	cfg := bpf.NatSnatConfig{
-		ExternalIp: ipToUint32(externalIP),
-		MaxMss:     maxMSS,
+		ExternalIp:   ipToUint32(externalIP),
+		InternalNet:  internalNet,
+		InternalMask: internalMask,
+		MaxMss:       maxMSS,
 	}
-	slog.Info("Updating SNAT configuration", 
+	slog.Info("Updating SNAT configuration",
 		slog.String("external_ip", externalIP.String()),
 		slog.Uint64("max_mss", uint64(maxMSS)))
 	return m.objects.SnatConfigMap.Update(uint32(0), cfg, 0)

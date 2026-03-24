@@ -46,6 +46,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&debug, "debug", "d", false, "Enable debug logging and BPF tracing")
 	rootCmd.Flags().BoolVarP(&cfg.Masquerade, "masquerade", "m", true, "Enable dynamic SNAT (masquerading)")
 	rootCmd.Flags().StringVar(&cfg.ExternalIP, "external-ip", "", "Static external IP for SNAT (overrides detection)")
+	rootCmd.Flags().StringVar(&cfg.InternalNet, "internal-net", "", "Internal network CIDR for Anti-Spoofing (e.g., 192.168.1.0/24)")
 	rootCmd.Flags().StringVar(&cfg.IPDetectType, "ip-detect-type", "auto", "IP detection type (generic, aws, gcp, auto)")
 	rootCmd.Flags().DurationVar(&ipDetectInterval, "ip-detect-interval", 5*time.Minute, "IP detection interval")
 	rootCmd.Flags().StringVar(&cfg.GCInterval, "gc-interval", "1m", "Garbage collection interval")
