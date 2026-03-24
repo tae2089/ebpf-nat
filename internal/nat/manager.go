@@ -1,6 +1,7 @@
 package nat
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"encoding/gob"
@@ -277,11 +278,17 @@ func (m *Manager) SaveSessions(path string) error {
 	}
 	defer os.Remove(tmpFile) // Remove if we fail
 
-	// Serialize using gob
-	encoder := gob.NewEncoder(f)
+	// Serialize using gob with gzip compression
+	gw := gzip.NewWriter(f)
+	encoder := gob.NewEncoder(gw)
 	if err := encoder.Encode(snapshot); err != nil {
+		gw.Close()
 		f.Close()
 		return fmt.Errorf("failed to encode session snapshot: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		f.Close()
+		return fmt.Errorf("failed to close gzip writer: %w", err)
 	}
 
 	// Ensure all data is written to disk
@@ -323,7 +330,14 @@ func (m *Manager) RestoreSessions(path string) error {
 	defer f.Close()
 
 	var snapshot SessionSnapshot
-	decoder := gob.NewDecoder(f)
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gr.Close()
+
+	decoder := gob.NewDecoder(gr)
 	if err := decoder.Decode(&snapshot); err != nil {
 		return fmt.Errorf("failed to decode session snapshot: %w", err)
 	}

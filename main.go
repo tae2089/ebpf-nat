@@ -52,6 +52,7 @@ func init() {
 	rootCmd.Flags().StringVar(&cfg.TCPTimeout, "tcp-timeout", "24h", "TCP session timeout")
 	rootCmd.Flags().StringVar(&cfg.UDPTimeout, "udp-timeout", "5m", "UDP session timeout")
 	rootCmd.Flags().Uint16Var(&cfg.MaxMSS, "max-mss", 0, "TCP MSS clamping value (0 to disable)")
+	rootCmd.Flags().Uint32Var(&cfg.MaxSessions, "max-sessions", 65536, "Maximum NAT sessions")
 	rootCmd.Flags().StringVar(&cfg.SessionFile, "session-file", "/var/lib/ebpf-nat/sessions.gob", "Path to save/restore sessions")
 
 	rootCmd.Flags().BoolVar(&cfg.Metrics.Enabled, "metrics-enabled", false, "Enable Prometheus metrics")
@@ -94,9 +95,26 @@ func run() {
 		os.Exit(1)
 	}
 
-	// Load BPF objects
+	// Load BPF spec to modify map sizes if needed
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		slog.Error("Failed to load BPF spec", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	if cfg.MaxSessions > 0 {
+		if m, ok := spec.Maps["conntrack_map"]; ok {
+			m.MaxEntries = cfg.MaxSessions
+		}
+		if m, ok := spec.Maps["reverse_nat_map"]; ok {
+			m.MaxEntries = cfg.MaxSessions
+		}
+		slog.Info("Adjusting map sizes", slog.Uint64("max_sessions", uint64(cfg.MaxSessions)))
+	}
+
+	// Load BPF objects from spec
 	objs := bpf.NatObjects{}
-	if err := bpf.LoadNatObjects(&objs, nil); err != nil {
+	if err := spec.LoadAndAssign(&objs, nil); err != nil {
 		slog.Error("Failed to load BPF objects", slog.Any("error", err))
 		os.Exit(1)
 	}

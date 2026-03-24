@@ -337,14 +337,15 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
         if (!cfg || cfg->external_ip == 0) return TC_ACT_OK;
         if (iph->saddr == cfg->external_ip) return TC_ACT_OK;
 
+        // Dynamic SNAT allocation logic with power-of-two randomized probe
         __u32 hash = bpf_get_prandom_u32();
-        __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
         __u16 allocated_port = 0;
 
+        // 1. Try 2 random probes first
         #pragma unroll
-        for (int i = 0; i < PORT_SCAN_LIMIT; i++) {
-            __u32 test_port_32 = EPHEMERAL_PORT_START + ((start_port - EPHEMERAL_PORT_START + i) % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
-            __u16 test_port = (__u16)test_port_32;
+        for (int i = 0; i < 2; i++) {
+            __u32 probe_port_32 = EPHEMERAL_PORT_START + (bpf_get_prandom_u32() % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
+            __u16 test_port = (__u16)probe_port_32;
 
             struct nat_key rev_check_key = {0};
             rev_check_key.src_ip = iph->daddr;
@@ -361,6 +362,33 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             if (!bpf_map_lookup_elem(&reverse_nat_map, &rev_check_key)) {
                 allocated_port = test_port;
                 break;
+            }
+        }
+
+        // 2. Fallback to linear scan if random probes failed
+        if (allocated_port == 0) {
+            __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
+            #pragma unroll
+            for (int i = 0; i < PORT_SCAN_LIMIT; i++) {
+                __u32 test_port_32 = EPHEMERAL_PORT_START + ((start_port - EPHEMERAL_PORT_START + i) % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
+                __u16 test_port = (__u16)test_port_32;
+
+                struct nat_key rev_check_key = {0};
+                rev_check_key.src_ip = iph->daddr;
+                rev_check_key.dst_ip = cfg->external_ip;
+                if (iph->protocol == IPPROTO_ICMP) {
+                    rev_check_key.src_port = test_port;
+                    rev_check_key.dst_port = test_port;
+                } else {
+                    rev_check_key.src_port = key.dst_port;
+                    rev_check_key.dst_port = test_port;
+                }
+                rev_check_key.protocol = iph->protocol;
+
+                if (!bpf_map_lookup_elem(&reverse_nat_map, &rev_check_key)) {
+                    allocated_port = test_port;
+                    break;
+                }
             }
         }
 
