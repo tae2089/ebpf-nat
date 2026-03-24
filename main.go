@@ -221,11 +221,20 @@ func run() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 
-	cancel() // Stop background tasks
+	slog.Info("Shutting down gracefully...")
+	cancel() // Stop background tasks (GC, IP detection)
 
-	// Save sessions if configured
+	// 1. Detach eBPF programs first to stop processing new packets
+	slog.Info("Detaching eBPF programs from interface", slog.String("interface", cfg.Interface))
+	if err := netlink.FilterDel(filterIngress); err != nil {
+		slog.Error("Failed to detach ingress filter", slog.Any("error", err))
+	}
+	if err := netlink.FilterDel(filterEgress); err != nil {
+		slog.Error("Failed to detach egress filter", slog.Any("error", err))
+	}
+
+	// 2. Save sessions now that no new sessions are being created
 	if cfg.SessionFile != "" {
-		// Ensure the directory exists
 		dir := filepath.Dir(cfg.SessionFile)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			slog.Error("Failed to create session directory", slog.String("dir", dir), slog.Any("error", err))
@@ -236,7 +245,7 @@ func run() {
 		}
 	}
 
-	slog.Info("Detaching eBPF program and exiting...")
+	slog.Info("Exiting...")
 }
 
 func main() {
