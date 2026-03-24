@@ -32,7 +32,21 @@ struct snat_config {
 } __attribute__((aligned(8)));
 
 
-// Metrics structures
+// Checksum helpers
+static __always_inline void update_tcp_csum(struct __sk_buff *skb, __u32 tcp_off, __be32 old_ip, __be32 new_ip, __be16 old_port, __be16 new_port) {
+    bpf_l4_csum_replace(skb, tcp_off + offsetof(struct tcphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
+    bpf_l4_csum_replace(skb, tcp_off + offsetof(struct tcphdr, check), old_port, new_port, sizeof(new_port));
+}
+
+static __always_inline void update_udp_csum(struct __sk_buff *skb, __u32 udp_off, __be32 old_ip, __be32 new_ip, __be16 old_port, __be16 new_port) {
+    bpf_l4_csum_replace(skb, udp_off + offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
+    bpf_l4_csum_replace(skb, udp_off + offsetof(struct udphdr, check), old_port, new_port, sizeof(new_port));
+}
+
+static __always_inline void update_ip_csum(struct __sk_buff *skb, __u32 ip_off, __be32 old_ip, __be32 new_ip) {
+    bpf_l3_csum_replace(skb, ip_off + offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
+}
+
 #define DIRECTION_INGRESS 0
 #define DIRECTION_EGRESS  1
 

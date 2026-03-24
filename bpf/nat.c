@@ -127,9 +127,8 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
             th->dest = new_port_be;
             iph->daddr = new_ip;
         }
-        bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
-        bpf_l4_csum_replace(skb, 34 + offsetof(struct tcphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-        bpf_l4_csum_replace(skb, 34 + offsetof(struct tcphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
+        update_ip_csum(skb, 14, old_ip, new_ip);
+        update_tcp_csum(skb, 34, old_ip, new_ip, old_port_be, new_port_be);
     } else if (protocol == IPPROTO_UDP) {
         struct udphdr *uh = (void *)(iph + 1);
         if ((void *)(uh + 1) > data_end) return TC_ACT_OK;
@@ -143,10 +142,10 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
             uh->dest = new_port_be;
             iph->daddr = new_ip;
         }
-        bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
-        bpf_l4_csum_replace(skb, 34 + offsetof(struct udphdr, check), old_ip, new_ip, BPF_F_PSEUDO_HDR | sizeof(new_ip));
-        bpf_l4_csum_replace(skb, 34 + offsetof(struct udphdr, check), old_port_be, new_port_be, sizeof(new_port_be));
-    } else if (protocol == IPPROTO_ICMP) {
+        update_ip_csum(skb, 14, old_ip, new_ip);
+        update_udp_csum(skb, 34, old_ip, new_ip, old_port_be, new_port_be);
+    }
+ else if (protocol == IPPROTO_ICMP) {
         struct icmphdr *ih = (void *)(iph + 1);
         if ((void *)(ih + 1) > data_end) return TC_ACT_OK;
 
@@ -191,8 +190,8 @@ static __always_inline int apply_nat_icmp_error(struct __sk_buff *skb, struct na
     outer_iph->daddr = new_outer_dst;
 
     // Checksums
-    bpf_l3_csum_replace(skb, 42 + offsetof(struct iphdr, check), old_inner_src, new_inner_src, sizeof(new_inner_src));
-    bpf_l3_csum_replace(skb, 14 + offsetof(struct iphdr, check), old_outer_dst, new_outer_dst, sizeof(new_outer_dst));
+    update_ip_csum(skb, 42, old_inner_src, new_inner_src); // Inner IP
+    update_ip_csum(skb, 14, old_outer_dst, new_outer_dst); // Outer IP
     
     // ICMP checksum covers the payload (inner headers)
     bpf_l4_csum_replace(skb, 34 + offsetof(struct icmphdr, checksum), old_inner_src, new_inner_src, sizeof(new_inner_src));
