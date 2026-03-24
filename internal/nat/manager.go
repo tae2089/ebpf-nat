@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,12 +18,18 @@ import (
 	"github.com/tae2089/ebpf-nat/internal/ipdetect"
 )
 
+var (
+	ErrManagerStopping = errors.New("manager is stopping")
+)
+
 type Manager struct {
 	objects    *bpf.NatObjects
 	ipDetector ipdetect.Detector
 	privateIP  net.IP
 	tcpTimeout time.Duration
 	udpTimeout time.Duration
+	mu         sync.RWMutex
+	isStopping bool
 }
 
 func NewManager(objs *bpf.NatObjects) *Manager {
@@ -32,7 +40,20 @@ func NewManager(objs *bpf.NatObjects) *Manager {
 	}
 }
 
+// Shutdown marks the manager as stopping.
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.isStopping = true
+}
+
 func (m *Manager) LoadConfig(cfg *config.Config) error {
+	m.mu.Lock()
+	if m.isStopping {
+		m.mu.Unlock()
+		return ErrManagerStopping
+	}
+	m.mu.Unlock()
 	// Parse timeouts
 	m.tcpTimeout = 24 * time.Hour
 	if cfg.TCPTimeout != "" {
@@ -119,6 +140,13 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 }
 
 func (m *Manager) SetSNATConfig(externalIP net.IP) error {
+	m.mu.RLock()
+	if m.isStopping {
+		m.mu.RUnlock()
+		return ErrManagerStopping
+	}
+	m.mu.RUnlock()
+
 	cfg := bpf.NatSnatConfig{
 		ExternalIp: ipToUint32(externalIP),
 	}
@@ -127,6 +155,13 @@ func (m *Manager) SetSNATConfig(externalIP net.IP) error {
 }
 
 func (m *Manager) updatePublicIP(ctx context.Context) error {
+	m.mu.RLock()
+	if m.isStopping {
+		m.mu.RUnlock()
+		return ErrManagerStopping
+	}
+	m.mu.RUnlock()
+
 	if m.ipDetector == nil {
 		return nil
 	}
@@ -163,11 +198,23 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 			slog.Info("Stopping background tasks")
 			return
 		case <-ipTickerC:
+			m.mu.RLock()
+			stopping := m.isStopping
+			m.mu.RUnlock()
+			if stopping {
+				return
+			}
 			slog.Debug("Triggering periodic public IP detection")
 			if err := m.updatePublicIP(ctx); err != nil {
 				slog.Error("Periodic public IP detection failed", slog.Any("error", err))
 			}
 		case <-gcTicker.C:
+			m.mu.RLock()
+			stopping := m.isStopping
+			m.mu.RUnlock()
+			if stopping {
+				return
+			}
 			now := uint64(time.Now().UnixNano())
 			if err := gc.RunOnce(ctx, now); err != nil {
 				slog.Error("Garbage collection failed", slog.Any("error", err))
@@ -178,6 +225,7 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 
 // SaveSessions iterates through ConntrackMap and ReverseNatMap and saves the sessions to a file.
 func (m *Manager) SaveSessions(path string) error {
+	// We allow SaveSessions during shutdown
 	bootTime := getBootTimeUnixNano()
 	snapshot := SessionSnapshot{
 		Version:   1,
@@ -248,6 +296,13 @@ func (m *Manager) SaveSessions(path string) error {
 
 // RestoreSessions reads the session snapshot from a file and loads it into eBPF maps.
 func (m *Manager) RestoreSessions(path string) error {
+	m.mu.RLock()
+	if m.isStopping {
+		m.mu.RUnlock()
+		return ErrManagerStopping
+	}
+	m.mu.RUnlock()
+
 	bootTime := getBootTimeUnixNano()
 	nowUnix := time.Now().UnixNano()
 
@@ -302,22 +357,46 @@ func (m *Manager) RestoreSessions(path string) error {
 		}
 	}
 
-	// Load sessions into eBPF maps using batch updates
+	// Load sessions into eBPF maps using chunked batch updates
+	const batchUpdateSize = 1000
+
 	if len(conntrackKeys) > 0 {
-		if n, err := m.objects.ConntrackMap.BatchUpdate(conntrackKeys, conntrackValues, nil); err != nil {
-			slog.Warn("BatchUpdate conntrack_map partially failed",
-				slog.Int("updated", n),
-				slog.Int("total", len(conntrackKeys)),
-				slog.Any("error", err))
+		for i := 0; i < len(conntrackKeys); i += batchUpdateSize {
+			end := i + batchUpdateSize
+			if end > len(conntrackKeys) {
+				end = len(conntrackKeys)
+			}
+
+			chunkKeys := conntrackKeys[i:end]
+			chunkValues := conntrackValues[i:end]
+
+			if n, err := m.objects.ConntrackMap.BatchUpdate(chunkKeys, chunkValues, nil); err != nil {
+				slog.Warn("BatchUpdate conntrack_map partially failed",
+					slog.Int("offset", i),
+					slog.Int("updated_in_chunk", n),
+					slog.Int("chunk_total", len(chunkKeys)),
+					slog.Any("error", err))
+			}
 		}
 	}
 
 	if len(reverseKeys) > 0 {
-		if n, err := m.objects.ReverseNatMap.BatchUpdate(reverseKeys, reverseValues, nil); err != nil {
-			slog.Warn("BatchUpdate reverse_nat_map partially failed",
-				slog.Int("updated", n),
-				slog.Int("total", len(reverseKeys)),
-				slog.Any("error", err))
+		for i := 0; i < len(reverseKeys); i += batchUpdateSize {
+			end := i + batchUpdateSize
+			if end > len(reverseKeys) {
+				end = len(reverseKeys)
+			}
+
+			chunkKeys := reverseKeys[i:end]
+			chunkValues := reverseValues[i:end]
+
+			if n, err := m.objects.ReverseNatMap.BatchUpdate(chunkKeys, chunkValues, nil); err != nil {
+				slog.Warn("BatchUpdate reverse_nat_map partially failed",
+					slog.Int("offset", i),
+					slog.Int("updated_in_chunk", n),
+					slog.Int("chunk_total", len(chunkKeys)),
+					slog.Any("error", err))
+			}
 		}
 	}
 
@@ -330,6 +409,13 @@ func (m *Manager) RestoreSessions(path string) error {
 }
 
 func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {
+	m.mu.RLock()
+	if m.isStopping {
+		m.mu.RUnlock()
+		return ErrManagerStopping
+	}
+	m.mu.RUnlock()
+
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
 		DstIp:    ipToUint32(dstIP),
@@ -347,6 +433,13 @@ func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, prot
 }
 
 func (m *Manager) AddDNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {
+	m.mu.RLock()
+	if m.isStopping {
+		m.mu.RUnlock()
+		return ErrManagerStopping
+	}
+	m.mu.RUnlock()
+
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
 		DstIp:    ipToUint32(dstIP),
