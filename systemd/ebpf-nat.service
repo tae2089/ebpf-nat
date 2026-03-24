@@ -5,9 +5,17 @@ After=network.target network-online.target
 Wants=network-online.target
 
 [Service]
+# eBPF requires root privileges
+User=root
+Group=root
+
 Type=simple
 # Load environment variables
 EnvironmentFile=-/etc/default/ebpf-nat
+
+# systemd will manage /var/lib/ebpf-nat directory and its permissions
+StateDirectory=ebpf-nat
+RuntimeDirectory=ebpf-nat
 
 # Wait a little bit for the interface to be fully up
 ExecStartPre=/bin/sleep 2
@@ -16,13 +24,18 @@ ExecStartPre=/bin/sleep 2
 ExecStart=/usr/local/bin/ebpf-nat \
     --interface ${EBPF_NAT_INTERFACE} \
     --masquerade=${EBPF_NAT_MASQUERADE} \
+    --external-ip="${EBPF_NAT_EXTERNAL_IP}" \
     --ip-detect-type ${EBPF_NAT_IP_DETECT_TYPE} \
     --metrics-enabled=${EBPF_NAT_METRICS_ENABLED} \
+    --session-file ${EBPF_NAT_SESSION_FILE} \
     ${EBPF_NAT_EXTRA_FLAGS}
 
+# Use SIGTERM to allow graceful shutdown and session saving
+KillSignal=SIGTERM
 Restart=on-failure
 RestartSec=5
-# eBPF requires memlock and CAP_NET_ADMIN/CAP_SYS_ADMIN
+
+# eBPF requires memlock and net/sys/bpf/perfmon capabilities
 LimitMEMLOCK=infinity
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF CAP_PERFMON
 

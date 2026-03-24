@@ -17,5 +17,8 @@ EBPF_NAT_IP_DETECT_TYPE="auto"
 # Enable Prometheus metrics
 EBPF_NAT_METRICS_ENABLED="true"
 
+# Path to save/restore sessions across restarts
+EBPF_NAT_SESSION_FILE="/var/lib/ebpf-nat/sessions.gob"
+
 # Additional flags can be added here
 EBPF_NAT_EXTRA_FLAGS=""
