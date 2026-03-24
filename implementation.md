@@ -36,3 +36,7 @@ We have completed a series of refinements based on code review feedback to impro
 - **Efficient GC**: Closing TCP sessions now have a much shorter timeout (2 minutes) to reclaim ports faster.
 - **Full ICMP Support**: Added Egress ICMP Error NAT support, enabling proper Path MTU Discovery and error reporting for DNAT/SNAT.
 - **Scalability**: Increased `PORT_SCAN_LIMIT` to 128 to improve port allocation success rate under heavy load.
+
+### 8. Enterprise Network Support
+- **VLAN Support**: Added detection and processing for VLAN (802.1Q) and stacked VLAN (802.1AD) tags.
+- **Dynamic Offsets**: Refactored all packet header parsing and translation logic to use dynamic L3/L4 offsets, ensuring compatibility with various network encapsulation methods.

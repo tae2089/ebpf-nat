@@ -28,3 +28,8 @@
     - [x] Implement Egress ICMP Error NAT for DNAT and dynamic SNAT.
     - [x] Increase `PORT_SCAN_LIMIT` to 128 for better allocation success.
     - [x] Add unit test for state-aware timeout in `gc_test.go`.
+
+- [x] **Task 10: Enterprise Network Topology Support**
+    - [x] Implement VLAN (802.1Q/802.1AD) tag detection and support in BPF.
+    - [x] Refactor BPF helpers to use dynamic offsets for L3/L4 headers.
+    - [x] Verify BPF Verifier compatibility with new offset logic.

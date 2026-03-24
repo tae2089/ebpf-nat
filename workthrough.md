@@ -18,4 +18,7 @@
     - Implemented State-aware TCP session tracking (`ACTIVE` vs `CLOSING`) in BPF and GC.
     - Implemented Egress ICMP Error NAT support for full ICMP compatibility.
     - Increased `PORT_SCAN_LIMIT` to 128 for better scalability.
-    - Verified all changes with `make test`.
+    - **Added foundational mandate to `GEMINI.md`: Project will NOT support YAML configuration.**
+    - **Implemented VLAN (802.1Q/802.1AD) support in `nat.c` using dynamic header offsets.**
+    - **Refactored BPF helper functions (`apply_nat`, `clamp_mss`, etc.) to support flexible packet structures.**
+    - Verified all changes with `make test` and confirmed BPF Verifier compatibility.
