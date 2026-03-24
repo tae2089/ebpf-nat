@@ -51,6 +51,7 @@ func init() {
 	rootCmd.Flags().StringVar(&cfg.GCInterval, "gc-interval", "1m", "Garbage collection interval")
 	rootCmd.Flags().StringVar(&cfg.TCPTimeout, "tcp-timeout", "24h", "TCP session timeout")
 	rootCmd.Flags().StringVar(&cfg.UDPTimeout, "udp-timeout", "5m", "UDP session timeout")
+	rootCmd.Flags().Uint16Var(&cfg.MaxMSS, "max-mss", 0, "TCP MSS clamping value (0 to disable)")
 	rootCmd.Flags().StringVar(&cfg.SessionFile, "session-file", "/var/lib/ebpf-nat/sessions.gob", "Path to save/restore sessions")
 
 	rootCmd.Flags().BoolVar(&cfg.Metrics.Enabled, "metrics-enabled", false, "Enable Prometheus metrics")

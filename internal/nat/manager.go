@@ -28,6 +28,7 @@ type Manager struct {
 	privateIP  net.IP
 	tcpTimeout time.Duration
 	udpTimeout time.Duration
+	maxMSS     uint16
 	mu         sync.RWMutex
 	isStopping bool
 }
@@ -67,6 +68,7 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 			m.udpTimeout = d
 		}
 	}
+	m.maxMSS = cfg.MaxMSS
 
 	// Find private IP of the interface for fallback
 	iface, err := net.InterfaceByName(cfg.Interface)
@@ -86,7 +88,7 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 
 	if cfg.Masquerade {
 		if cfg.ExternalIP != "" {
-			if err := m.SetSNATConfig(net.ParseIP(cfg.ExternalIP)); err != nil {
+			if err := m.SetSNATConfig(net.ParseIP(cfg.ExternalIP), cfg.MaxMSS); err != nil {
 				return err
 			}
 		} else {
@@ -109,7 +111,7 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 			if err := m.updatePublicIP(context.Background()); err != nil {
 				slog.Error("Initial public IP detection failed, using private IP", slog.Any("error", err))
 				if m.privateIP != nil {
-					m.SetSNATConfig(m.privateIP)
+					m.SetSNATConfig(m.privateIP, cfg.MaxMSS)
 				}
 			}
 		}
@@ -139,7 +141,7 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 	return nil
 }
 
-func (m *Manager) SetSNATConfig(externalIP net.IP) error {
+func (m *Manager) SetSNATConfig(externalIP net.IP, maxMSS uint16) error {
 	m.mu.RLock()
 	if m.isStopping {
 		m.mu.RUnlock()
@@ -149,8 +151,11 @@ func (m *Manager) SetSNATConfig(externalIP net.IP) error {
 
 	cfg := bpf.NatSnatConfig{
 		ExternalIp: ipToUint32(externalIP),
+		MaxMss:     maxMSS,
 	}
-	slog.Info("Updating SNAT configuration", slog.String("external_ip", externalIP.String()))
+	slog.Info("Updating SNAT configuration", 
+		slog.String("external_ip", externalIP.String()),
+		slog.Uint64("max_mss", uint64(maxMSS)))
 	return m.objects.SnatConfigMap.Update(uint32(0), cfg, 0)
 }
 
@@ -160,6 +165,7 @@ func (m *Manager) updatePublicIP(ctx context.Context) error {
 		m.mu.RUnlock()
 		return ErrManagerStopping
 	}
+	maxMSS := m.maxMSS
 	m.mu.RUnlock()
 
 	if m.ipDetector == nil {
@@ -171,7 +177,7 @@ func (m *Manager) updatePublicIP(ctx context.Context) error {
 		return err
 	}
 
-	return m.SetSNATConfig(ip)
+	return m.SetSNATConfig(ip, maxMSS)
 }
 
 // RunBackgroundTasks starts periodic tasks like IP detection and garbage collection.

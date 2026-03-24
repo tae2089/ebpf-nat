@@ -23,6 +23,7 @@ struct nat_entry {
 
 struct snat_config {
     __u32 external_ip;
+    __u16 max_mss;
 };
 
 // Metrics structures

@@ -68,6 +68,7 @@ sudo ./scripts/install.sh
 | `--metrics-enabled` | Prometheus 메트릭 활성화 | `false` |
 | `--metrics-port` | 메트릭 서버 포트 | `9090` |
 | `--ip-detect-type` | 외부 IP 감지 방식 (aws, gcp, generic, auto) | `auto` |
+| `--max-mss` | TCP MSS Clamping 값 (0은 비활성화) | `0` |
 
 ## 개발 및 테스트 (Development)
 

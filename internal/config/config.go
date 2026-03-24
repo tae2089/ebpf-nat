@@ -8,6 +8,7 @@ type Config struct {
 	GCInterval   string // e.g., "1m"
 	TCPTimeout   string // e.g., "24h"
 	UDPTimeout   string // e.g., "5m"
+	MaxMSS       uint16 // TCP MSS clamping
 	SessionFile  string // path to save/restore sessions
 	Metrics      MetricsConfig
 	SNAT         []Rule

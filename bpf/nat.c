@@ -67,6 +67,30 @@ static __always_inline void update_metrics(__u8 protocol, __u8 direction, __u8 a
     }
 }
 
+static __always_inline void clamp_mss(struct __sk_buff *skb, struct tcphdr *th, __u16 max_mss) {
+    if (max_mss == 0) return;
+    if (!(th->syn)) return;
+
+    void *data_end = (void *)(long)skb->data_end;
+    __u8 *opt = (__u8 *)(th + 1);
+
+    // Only check the first option for simplicity and verifier satisfaction
+    if ((void *)(opt + 4) > data_end) return;
+
+    if (opt[0] == 2 && opt[1] == 4) { // MSS kind and length
+        __be16 *mss_p = (__be16 *)(opt + 2);
+        __be16 old_mss_be = *mss_p;
+        __u16 mss = bpf_ntohs(old_mss_be);
+        if (mss > max_mss) {
+            __be16 new_mss_be = bpf_htons(max_mss);
+            *mss_p = new_mss_be;
+            // Update TCP checksum incrementally
+            // Offset: 14 (Eth) + 20 (IP) + 16 (TCP Checksum) = 50
+            bpf_l4_csum_replace(skb, 50, old_mss_be, new_mss_be, sizeof(new_mss_be));
+        }
+    }
+}
+
 static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *entry, bool is_snat) {
     void *data_end = (void *)(long)skb->data_end;
     void *data     = (void *)(long)skb->data;
@@ -197,11 +221,14 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     key.dst_ip   = iph->daddr;
     key.protocol = iph->protocol;
 
+    bool is_tcp_fin_rst = false;
+
     if (iph->protocol == IPPROTO_TCP) {
         struct tcphdr *th = (void *)(iph + 1);
         if ((void *)(th + 1) > data_end) return TC_ACT_OK;
         key.src_port = bpf_ntohs(th->source);
         key.dst_port = bpf_ntohs(th->dest);
+        if (th->fin || th->rst) is_tcp_fin_rst = true;
     } else if (iph->protocol == IPPROTO_UDP) {
         struct udphdr *uh = (void *)(iph + 1);
         if ((void *)(uh + 1) > data_end) return TC_ACT_OK;
@@ -224,8 +251,8 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
                 lookup_key.dst_ip = inner_iph->saddr;
                 lookup_key.protocol = inner_iph->protocol;
 
-                if (data + 62 + 4 > data_end) return TC_ACT_OK;
-                __be16 *inner_ports = data + 62;
+                if ((void *)(data + 66) > data_end) return TC_ACT_OK;
+                __be16 *inner_ports = (void *)(data + 62);
                 lookup_key.src_port = bpf_ntohs(inner_ports[1]);
                 lookup_key.dst_port = bpf_ntohs(inner_ports[0]);
 
@@ -243,12 +270,29 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
         return TC_ACT_OK;
     }
 
+    __u32 zero = 0;
+    struct snat_config *cfg = bpf_map_lookup_elem(&snat_config_map, &zero);
+
     if (is_ingress) {
-        // Ingress path: DNAT lookup (for return traffic or port forwarding)
         struct nat_entry *entry = bpf_map_lookup_elem(&reverse_nat_map, &key);
         if (entry) {
-            entry->last_seen = bpf_ktime_get_ns();
+            if (!is_tcp_fin_rst) {
+                entry->last_seen = bpf_ktime_get_ns();
+            }
             update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
+            
+            // Re-validate pointers for the verifier after potential invalidation by previous checks
+            data     = (void *)(long)skb->data;
+            data_end = (void *)(long)skb->data_end;
+            struct iphdr *iph2 = (void *)(data + 14);
+            if ((void *)(iph2 + 1) > data_end) return TC_ACT_OK;
+            
+            if (iph2->protocol == IPPROTO_TCP && cfg) {
+                struct tcphdr *th = (void *)(iph2 + 1);
+                if ((void *)(th + 1) > data_end) return TC_ACT_OK;
+                clamp_mss(skb, th, cfg->max_mss);
+            }
+            
             return apply_nat(skb, entry, false);
         }
 
@@ -256,24 +300,43 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
         if (entry) {
             entry->last_seen = bpf_ktime_get_ns();
             update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
+            
+            data     = (void *)(long)skb->data;
+            data_end = (void *)(long)skb->data_end;
+            struct iphdr *iph2 = (void *)(data + 14);
+            if ((void *)(iph2 + 1) > data_end) return TC_ACT_OK;
+            if (iph2->protocol == IPPROTO_TCP && cfg) {
+                struct tcphdr *th = (void *)(iph2 + 1);
+                if ((void *)(th + 1) > data_end) return TC_ACT_OK;
+                clamp_mss(skb, th, cfg->max_mss);
+            }
+            
             return apply_nat(skb, entry, false);
         }
     } else {
-        // Egress path: SNAT lookup or new session
         struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
         if (entry) {
-            entry->last_seen = bpf_ktime_get_ns();
+            if (!is_tcp_fin_rst) {
+                entry->last_seen = bpf_ktime_get_ns();
+            }
             update_metrics(key.protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+            
+            data     = (void *)(long)skb->data;
+            data_end = (void *)(long)skb->data_end;
+            struct iphdr *iph2 = (void *)(data + 14);
+            if ((void *)(iph2 + 1) > data_end) return TC_ACT_OK;
+            if (iph2->protocol == IPPROTO_TCP && cfg) {
+                struct tcphdr *th = (void *)(iph2 + 1);
+                if ((void *)(th + 1) > data_end) return TC_ACT_OK;
+                clamp_mss(skb, th, cfg->max_mss);
+            }
+            
             return apply_nat(skb, entry, true);
         }
 
-        // Check if we should create a new SNAT session
-        __u32 zero = 0;
-        struct snat_config *cfg = bpf_map_lookup_elem(&snat_config_map, &zero);
         if (!cfg || cfg->external_ip == 0) return TC_ACT_OK;
         if (iph->saddr == cfg->external_ip) return TC_ACT_OK;
 
-        // Dynamic SNAT allocation logic
         __u32 hash = bpf_get_prandom_u32();
         __u32 start_port = EPHEMERAL_PORT_START + (hash % (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1));
         __u16 allocated_port = 0;
@@ -340,6 +403,17 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
         }
 
         update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+        
+        data     = (void *)(long)skb->data;
+        data_end = (void *)(long)skb->data_end;
+        struct iphdr *iph3 = (void *)(data + 14);
+        if ((void *)(iph3 + 1) > data_end) return TC_ACT_OK;
+        if (iph3->protocol == IPPROTO_TCP) {
+            struct tcphdr *th = (void *)(iph3 + 1);
+            if ((void *)(th + 1) > data_end) return TC_ACT_OK;
+            clamp_mss(skb, th, cfg->max_mss);
+        }
+        
         return apply_nat(skb, &forward_entry, true);
     }
 

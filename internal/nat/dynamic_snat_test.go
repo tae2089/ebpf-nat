@@ -56,7 +56,7 @@ func TestSetSNATConfig(t *testing.T) {
 	mgr := NewManager(objs)
 	externalIP := net.ParseIP("1.1.1.1")
 
-	if err := mgr.SetSNATConfig(externalIP); err != nil {
+	if err := mgr.SetSNATConfig(externalIP, 0); err != nil {
 		t.Fatalf("SetSNATConfig failed: %v", err)
 	}
 
