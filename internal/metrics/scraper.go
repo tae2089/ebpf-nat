@@ -10,11 +10,12 @@ import (
 )
 
 type Scraper struct {
-	objects        *bpf.NatObjects
-	packetsTotal   *prometheus.Desc
-	bytesTotal     *prometheus.Desc
-	activeSessions *prometheus.Desc
-	allocFailures  *prometheus.Desc
+	objects           *bpf.NatObjects
+	packetsTotal      *prometheus.Desc
+	bytesTotal        *prometheus.Desc
+	activeSessions    *prometheus.Desc
+	allocFailures     *prometheus.Desc
+	mapUpdateFailures *prometheus.Desc
 }
 
 func NewScraper(objs *bpf.NatObjects, reg prometheus.Registerer) *Scraper {
@@ -44,6 +45,12 @@ func NewScraper(objs *bpf.NatObjects, reg prometheus.Registerer) *Scraper {
 			[]string{"protocol"},
 			nil,
 		),
+		mapUpdateFailures: prometheus.NewDesc(
+			"ebpf_nat_map_update_failures_total",
+			"Total number of failed map update attempts",
+			[]string{"protocol"},
+			nil,
+		),
 	}
 
 	if reg != nil {
@@ -58,6 +65,7 @@ func (s *Scraper) Describe(ch chan<- *prometheus.Desc) {
 	ch <- s.bytesTotal
 	ch <- s.activeSessions
 	ch <- s.allocFailures
+	ch <- s.mapUpdateFailures
 }
 
 func (s *Scraper) Collect(ch chan<- prometheus.Metric) {
@@ -88,6 +96,8 @@ func (s *Scraper) collectFromMetricsMap(ch chan<- prometheus.Metric) {
 
 		if key.Action == 3 { // ACTION_ALLOC_FAIL
 			ch <- prometheus.MustNewConstMetric(s.allocFailures, prometheus.CounterValue, float64(totalPackets), proto)
+		} else if key.Action == 4 { // ACTION_MAP_UPDATE_FAIL
+			ch <- prometheus.MustNewConstMetric(s.mapUpdateFailures, prometheus.CounterValue, float64(totalPackets), proto)
 		} else {
 			ch <- prometheus.MustNewConstMetric(s.packetsTotal, prometheus.CounterValue, float64(totalPackets), proto, dir, act)
 			ch <- prometheus.MustNewConstMetric(s.bytesTotal, prometheus.CounterValue, float64(totalBytes), proto, dir, act)
@@ -155,6 +165,8 @@ func actionToString(a uint8) string {
 		return "passed"
 	case 3: // ACTION_ALLOC_FAIL
 		return "alloc_fail"
+	case 4: // ACTION_MAP_UPDATE_FAIL
+		return "map_update_fail"
 	default:
 		return "unknown"
 	}

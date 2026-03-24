@@ -311,7 +311,10 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             .translated_port = allocated_port,
             .last_seen = bpf_ktime_get_ns(),
         };
-        bpf_map_update_elem(&conntrack_map, &key, &forward_entry, BPF_ANY);
+        if (bpf_map_update_elem(&conntrack_map, &key, &forward_entry, BPF_ANY) != 0) {
+            update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_MAP_UPDATE_FAIL, skb->len);
+            return TC_ACT_SHOT;
+        }
 
         struct nat_key reverse_key = {0};
         reverse_key.src_ip = iph->daddr;
@@ -330,7 +333,11 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             .translated_port = key.src_port,
             .last_seen = bpf_ktime_get_ns(),
         };
-        bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY);
+        if (bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY) != 0) {
+            bpf_map_delete_elem(&conntrack_map, &key);
+            update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_MAP_UPDATE_FAIL, skb->len);
+            return TC_ACT_SHOT;
+        }
 
         update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
         return apply_nat(skb, &forward_entry, true);

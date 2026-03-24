@@ -33,6 +33,7 @@ struct snat_config {
 #define ACTION_DROPPED    1
 #define ACTION_PASSED      2
 #define ACTION_ALLOC_FAIL 3
+#define ACTION_MAP_UPDATE_FAIL 4
 
 struct metrics_key {
     __u8 protocol;

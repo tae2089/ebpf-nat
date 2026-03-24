@@ -222,26 +222,35 @@ func run() {
 	<-stop
 
 	slog.Info("Shutting down gracefully...")
+
+	// 1. Mark manager as stopping to prevent new map updates
+	natMgr.Shutdown()
 	cancel() // Stop background tasks (GC, IP detection)
 
-	// 1. Detach eBPF programs first to stop processing new packets
+	// 2. Detach eBPF programs first to stop processing new packets
 	slog.Info("Detaching eBPF programs from interface", slog.String("interface", cfg.Interface))
+
 	if err := netlink.FilterDel(filterIngress); err != nil {
 		slog.Error("Failed to detach ingress filter", slog.Any("error", err))
-	}
-	if err := netlink.FilterDel(filterEgress); err != nil {
-		slog.Error("Failed to detach egress filter", slog.Any("error", err))
+	} else {
+		slog.Debug("Successfully detached ingress filter")
 	}
 
-	// 2. Save sessions now that no new sessions are being created
+	if err := netlink.FilterDel(filterEgress); err != nil {
+		slog.Error("Failed to detach egress filter", slog.Any("error", err))
+	} else {
+		slog.Debug("Successfully detached egress filter")
+	}
+
+	// 3. Save sessions now that no new sessions are being created
 	if cfg.SessionFile != "" {
 		dir := filepath.Dir(cfg.SessionFile)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			slog.Error("Failed to create session directory", slog.String("dir", dir), slog.Any("error", err))
-		} else {
-			if err := natMgr.SaveSessions(cfg.SessionFile); err != nil {
-				slog.Error("Failed to save sessions", slog.String("path", cfg.SessionFile), slog.Any("error", err))
-			}
+		}
+		// Always attempt to save even if directory creation failed (it might already exist)
+		if err := natMgr.SaveSessions(cfg.SessionFile); err != nil {
+			slog.Error("Failed to save sessions", slog.String("path", cfg.SessionFile), slog.Any("error", err))
 		}
 	}
 
