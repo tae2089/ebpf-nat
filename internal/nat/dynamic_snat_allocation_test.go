@@ -8,8 +8,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
 const (
@@ -47,8 +47,8 @@ func TestDynamicSNATAllocation(t *testing.T) {
 		0x45, 0x00, 0x00, 0x28,
 		0x00, 0x00, 0x40, 0x00,
 		0x40, 0x11, 0x00, 0x00, // UDP
-		192, 168, 1, 10,       // src
-		8, 8, 8, 8,            // dst
+		192, 168, 1, 10, // src
+		8, 8, 8, 8, // dst
 		// UDP
 		0x30, 0x39, // src port 12345
 		0x00, 0x35, // dst port 53

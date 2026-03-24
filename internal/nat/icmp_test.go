@@ -7,12 +7,12 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"syscall"
 	"testing"
 	"time"
-	"syscall"
 
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
 func logPacket(t *testing.T, data []byte) {
@@ -56,8 +56,8 @@ func TestICMPEchoSNAT(t *testing.T) {
 		0x45, 0x00, 0x00, 0x1c, // v4, ihl 5, len 28 (20 IP + 8 ICMP)
 		0x00, 0x00, 0x40, 0x00, // id, flags, offset
 		0x40, 0x01, 0x00, 0x00, // ttl 64, proto 1 (ICMP)
-		192, 168, 1, 10,       // src
-		8, 8, 8, 8,            // dst
+		192, 168, 1, 10, // src
+		8, 8, 8, 8, // dst
 		// ICMP
 		0x08, 0x00, // type 8 (Echo Request), code 0
 		0x00, 0x00, // checksum
@@ -109,7 +109,7 @@ func TestICMPEchoDNAT(t *testing.T) {
 	revKey := bpf.NatNatKey{
 		SrcIp:    ipToUint32(targetIP),
 		DstIp:    ipToUint32(externalIP),
-		SrcPort:  translatedID, 
+		SrcPort:  translatedID,
 		DstPort:  translatedID,
 		Protocol: 1,
 	}
@@ -132,8 +132,8 @@ func TestICMPEchoDNAT(t *testing.T) {
 		0x45, 0x00, 0x00, 0x1c,
 		0x00, 0x00, 0x40, 0x00,
 		0x40, 0x01, 0x00, 0x00,
-		8, 8, 8, 8,            // src
-		10, 0, 0, 1,           // dst (Gateway External IP)
+		8, 8, 8, 8, // src
+		10, 0, 0, 1, // dst (Gateway External IP)
 		// ICMP
 		0x00, 0x00, // type 0 (Echo Reply), code 0
 		0x00, 0x00, // checksum
@@ -216,8 +216,8 @@ func TestICMPErrorDNAT(t *testing.T) {
 		0x45, 0x00, 0x00, 0x38, // len 56
 		0x00, 0x00, 0x40, 0x00,
 		0x40, 0x01, 0x00, 0x00,
-		8, 8, 8, 8,            // src
-		10, 0, 0, 1,           // dst (Gateway External IP)
+		8, 8, 8, 8, // src
+		10, 0, 0, 1, // dst (Gateway External IP)
 		// ICMP Error
 		0x03, 0x04, // type 3 (Dest Unreach), code 4 (Frag Needed)
 		0x00, 0x00, // checksum
@@ -226,8 +226,8 @@ func TestICMPErrorDNAT(t *testing.T) {
 		0x45, 0x00, 0x00, 0x28,
 		0x00, 0x00, 0x40, 0x00,
 		0x40, 0x06, 0x00, 0x00, // TCP
-		10, 0, 0, 1,           // src (Gateway External IP)
-		8, 8, 8, 8,            // dst
+		10, 0, 0, 1, // src (Gateway External IP)
+		8, 8, 8, 8, // dst
 		// Inner TCP Header (first 8 bytes)
 		0x9c, 0x40, // src port 40000 (translated)
 		0x00, 0x50, // dst port 80

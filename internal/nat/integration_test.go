@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )
@@ -93,7 +93,7 @@ func TestNATConnectivity(t *testing.T) {
 	t.Run("Diagnostics", func(t *testing.T) {
 		out, _ := runCmd("ip addr")
 		t.Logf("Root NS interfaces:\n%s", out)
-		
+
 		env.runInNS(env.internalNS, func() error {
 			out, _ := runCmd("ip addr")
 			t.Logf("Internal NS addr:\n%s", out)
@@ -101,7 +101,7 @@ func TestNATConnectivity(t *testing.T) {
 			t.Logf("Internal NS route:\n%s", out)
 			return nil
 		})
-		
+
 		env.runInNS(env.externalNS, func() error {
 			out, _ := runCmd("ip addr")
 			t.Logf("External NS addr:\n%s", out)
@@ -159,16 +159,16 @@ func TestNATConnectivity(t *testing.T) {
 					return err
 				}
 				defer l.Close()
-				
+
 				// Set timeout for accept
 				l.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
-				
+
 				conn, err := l.Accept()
 				if err != nil {
 					return err
 				}
 				defer conn.Close()
-				
+
 				remoteAddr := conn.RemoteAddr().(*net.TCPAddr)
 				if !remoteAddr.IP.Equal(externalIP) {
 					receivedChan <- fmt.Sprintf("wrong src ip: %v", remoteAddr.IP)
@@ -228,15 +228,15 @@ func TestNATConnectivity(t *testing.T) {
 					return err
 				}
 				defer conn.Close()
-				
+
 				conn.SetDeadline(time.Now().Add(5 * time.Second))
-				
+
 				buf := make([]byte, 1024)
 				n, remoteAddr, err := conn.ReadFromUDP(buf)
 				if err != nil {
 					return err
 				}
-				
+
 				if !remoteAddr.IP.Equal(externalIP) {
 					receivedChan <- fmt.Sprintf("wrong src ip: %v", remoteAddr.IP)
 					return nil
@@ -290,7 +290,7 @@ func TestNATConnectivity(t *testing.T) {
 		if err := netlink.LinkSetMTU(link, 1400); err != nil {
 			t.Fatalf("Failed to set MTU: %v", err)
 		}
-		
+
 		// Reset MTU after test
 		defer netlink.LinkSetMTU(link, 1500)
 
@@ -319,13 +319,13 @@ func TestNATConnectivity(t *testing.T) {
 		var key bpf.NatMetricsKey
 		var values []bpf.NatMetricsValue
 		iter := objs.MetricsMap.Iterate()
-		
+
 		for iter.Next(&key, &values) {
 			var totalPackets uint64
 			for _, v := range values {
 				totalPackets += v.Packets
 			}
-			
+
 			if totalPackets > 0 {
 				if key.Protocol == syscall.IPPROTO_TCP && key.Action == 0 { // Translated
 					foundTCP = true
@@ -337,17 +337,84 @@ func TestNATConnectivity(t *testing.T) {
 				}
 			}
 		}
-		
+
 		if err := iter.Err(); err != nil {
 			t.Errorf("Failed to iterate metrics map: %v", err)
 		}
-		
+
 		if !foundTCP {
 			t.Error("TCP metrics not found or zero packets")
 		}
 		if !foundUDP {
 			t.Error("UDP metrics not found or zero packets")
 		}
+	})
+
+	// 5. Session Persistence Test
+	t.Run("Persistence", func(t *testing.T) {
+		mgr := NewManager(&objs)
+		mgr.udpTimeout = 5 * time.Minute
+		mgr.tcpTimeout = 24 * time.Hour
+		sessionFile := "/tmp/ebpf-nat-sessions.gob"
+
+		// Ensure there are some sessions from previous tests (UDP/TCP)
+		var count int
+		iter := objs.ConntrackMap.Iterate()
+		var k bpf.NatNatKey
+		var v bpf.NatNatEntry
+		for iter.Next(&k, &v) {
+			count++
+		}
+		if count == 0 {
+			t.Fatal("No sessions found in ConntrackMap to persist")
+		}
+		t.Logf("Found %d sessions to persist", count)
+
+		// Save sessions
+		if err := mgr.SaveSessions(sessionFile); err != nil {
+			t.Fatalf("Failed to save sessions: %v", err)
+		}
+
+		// Clear maps
+		if _, err := objs.ConntrackMap.BatchDelete(nil, nil); err != nil {
+			// Fallback to manual delete if BatchDelete(nil, nil) is not supported
+			iter = objs.ConntrackMap.Iterate()
+			for iter.Next(&k, &v) {
+				objs.ConntrackMap.Delete(k)
+			}
+		}
+		if _, err := objs.ReverseNatMap.BatchDelete(nil, nil); err != nil {
+			iter = objs.ReverseNatMap.Iterate()
+			for iter.Next(&k, &v) {
+				objs.ReverseNatMap.Delete(k)
+			}
+		}
+
+		// Verify maps are empty
+		count = 0
+		iter = objs.ConntrackMap.Iterate()
+		for iter.Next(&k, &v) {
+			count++
+		}
+		if count != 0 {
+			t.Fatalf("ConntrackMap not empty after clear: %d entries", count)
+		}
+
+		// Restore sessions
+		if err := mgr.RestoreSessions(sessionFile); err != nil {
+			t.Fatalf("Failed to restore sessions: %v", err)
+		}
+
+		// Verify sessions are back
+		count = 0
+		iter = objs.ConntrackMap.Iterate()
+		for iter.Next(&k, &v) {
+			count++
+		}
+		if count == 0 {
+			t.Fatal("No sessions restored in ConntrackMap")
+		}
+		t.Logf("Successfully restored %d sessions", count)
 	})
 
 	// Give some time for BPF logs

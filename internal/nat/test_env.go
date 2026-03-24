@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package nat
 
 import (
@@ -8,7 +11,7 @@ import (
 	"runtime"
 	"syscall"
 
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 )

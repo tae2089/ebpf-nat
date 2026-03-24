@@ -5,12 +5,12 @@ package nat
 
 import (
 	"net"
-	"testing"
 	"syscall"
+	"testing"
 
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
 func TestAddSNATRule(t *testing.T) {
