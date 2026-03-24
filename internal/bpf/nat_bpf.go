@@ -29,7 +29,8 @@ type NatNatEntry struct {
 	_              structs.HostLayout
 	TranslatedIp   uint32
 	TranslatedPort uint16
-	_              [2]byte
+	State          uint8
+	Pad            uint8
 	LastSeen       uint64
 }
 
@@ -40,12 +41,16 @@ type NatNatKey struct {
 	SrcPort  uint16
 	DstPort  uint16
 	Protocol uint8
-	_        [3]byte
+	Pad      [3]uint8
 }
 
 type NatSnatConfig struct {
-	_          structs.HostLayout
-	ExternalIp uint32
+	_            structs.HostLayout
+	ExternalIp   uint32
+	InternalNet  uint32
+	InternalMask uint32
+	MaxMss       uint16
+	Pad          uint16
 }
 
 // LoadNat returns the embedded CollectionSpec for Nat.

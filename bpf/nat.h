@@ -5,7 +5,7 @@
 
 #define EPHEMERAL_PORT_START 32768
 #define EPHEMERAL_PORT_END   60999
-#define PORT_SCAN_LIMIT      64
+#define PORT_SCAN_LIMIT      128
 
 struct nat_key {
     __u32 src_ip;
@@ -19,9 +19,13 @@ struct nat_key {
 struct nat_entry {
     __u32 translated_ip;
     __u16 translated_port;
-    __u16 pad; // Padding
+    __u8  state; // NAT_STATE_ACTIVE, NAT_STATE_CLOSING
+    __u8  pad;
     __u64 last_seen; // For session aging
 } __attribute__((aligned(8)));
+
+#define NAT_STATE_ACTIVE  0
+#define NAT_STATE_CLOSING 1
 
 struct snat_config {
     __u32 external_ip;

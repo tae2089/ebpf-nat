@@ -4,6 +4,7 @@
 package nat
 
 import (
+	"encoding/binary"
 	"net"
 	"syscall"
 	"testing"
@@ -128,5 +129,162 @@ func TestAddDNATRule(t *testing.T) {
 
 	if entry.TranslatedIp != ipToUint32(transIP) {
 		t.Errorf("Expected translated IP %v, got %v", ipToUint32(transIP), entry.TranslatedIp)
+	}
+}
+
+func TestManagerShutdown(t *testing.T) {
+	objs := &bpf.NatObjects{}
+	mgr := NewManager(objs)
+	mgr.Shutdown()
+
+	srcIP := net.ParseIP("192.168.1.10")
+	dstIP := net.ParseIP("8.8.8.8")
+	srcPort := uint16(12345)
+	dstPort := uint16(53)
+	protocol := uint8(syscall.IPPROTO_UDP)
+	transIP := net.ParseIP("10.0.0.1")
+	transPort := uint16(54321)
+
+	t.Run("AddSNATRule", func(t *testing.T) {
+		err := mgr.AddSNATRule(srcIP, dstIP, srcPort, dstPort, protocol, transIP, transPort)
+		if err != ErrManagerStopping {
+			t.Errorf("expected ErrManagerStopping, got %v", err)
+		}
+	})
+
+	t.Run("AddDNATRule", func(t *testing.T) {
+		err := mgr.AddDNATRule(srcIP, dstIP, srcPort, dstPort, protocol, transIP, transPort)
+		if err != ErrManagerStopping {
+			t.Errorf("expected ErrManagerStopping, got %v", err)
+		}
+	})
+}
+
+func TestMapFullLRU(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a very small LRU map to test eviction
+	m, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.LRUHash,
+		KeySize:    uint32(binary.Size(bpf.NatNatKey{})),
+		ValueSize:  uint32(binary.Size(bpf.NatNatEntry{})),
+		MaxEntries: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap: m,
+		},
+	}
+	mgr := NewManager(objs)
+
+	// Add 3 entries to a map of size 2
+	entries := []struct {
+		srcPort uint16
+		transIP string
+	}{
+		{10001, "10.0.0.1"},
+		{10002, "10.0.0.2"},
+		{10003, "10.0.0.3"},
+	}
+
+	for _, e := range entries {
+		err := mgr.AddSNATRule(
+			net.ParseIP("192.168.1.10"), net.ParseIP("8.8.8.8"),
+			e.srcPort, 53, uint8(syscall.IPPROTO_UDP),
+			net.ParseIP(e.transIP), 54321,
+		)
+		if err != nil {
+			t.Fatalf("Failed to add entry: %v", err)
+		}
+	}
+
+	// Verify that only the last 2 entries remain (LRU behavior)
+	var count int
+	iter := m.Iterate()
+	var key bpf.NatNatKey
+	var value bpf.NatNatEntry
+	for iter.Next(&key, &value) {
+		count++
+	}
+	if count != 2 {
+		t.Errorf("Expected 2 entries in LRU map, got %d", count)
+	}
+
+	// The first entry (10001) should be gone
+	firstKey := bpf.NatNatKey{
+		SrcIp:    ipToUint32(net.ParseIP("192.168.1.10")),
+		DstIp:    ipToUint32(net.ParseIP("8.8.8.8")),
+		SrcPort:  htons(10001),
+		DstPort:  htons(53),
+		Protocol: uint8(syscall.IPPROTO_UDP),
+	}
+	if err := m.Lookup(firstKey, &value); err == nil {
+		t.Errorf("Expected first entry to be evicted, but it was found")
+	}
+}
+
+func TestMapConflict(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ebpf.NewMap(&ebpf.MapSpec{
+		Type:       ebpf.Hash,
+		KeySize:    uint32(binary.Size(bpf.NatNatKey{})),
+		ValueSize:  uint32(binary.Size(bpf.NatNatEntry{})),
+		MaxEntries: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap: m,
+		},
+	}
+	mgr := NewManager(objs)
+
+	srcIP := net.ParseIP("192.168.1.10")
+	dstIP := net.ParseIP("8.8.8.8")
+	srcPort := uint16(12345)
+	dstPort := uint16(53)
+	protocol := uint8(syscall.IPPROTO_UDP)
+
+	// Add initial rule
+	err = mgr.AddSNATRule(srcIP, dstIP, srcPort, dstPort, protocol, net.ParseIP("10.0.0.1"), 54321)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Update the same rule with different translation (Conflict/Override)
+	err = mgr.AddSNATRule(srcIP, dstIP, srcPort, dstPort, protocol, net.ParseIP("10.0.0.2"), 55555)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the latest value is stored
+	key := bpf.NatNatKey{
+		SrcIp:    ipToUint32(srcIP),
+		DstIp:    ipToUint32(dstIP),
+		SrcPort:  htons(srcPort),
+		DstPort:  htons(dstPort),
+		Protocol: protocol,
+	}
+	var value bpf.NatNatEntry
+	if err := m.Lookup(key, &value); err != nil {
+		t.Fatal(err)
+	}
+
+	if value.TranslatedIp != ipToUint32(net.ParseIP("10.0.0.2")) {
+		t.Errorf("Expected updated IP 10.0.0.2, got %v", value.TranslatedIp)
 	}
 }

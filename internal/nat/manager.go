@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -23,41 +25,46 @@ var (
 	ErrManagerStopping = errors.New("manager is stopping")
 )
 
+const (
+	NatStateActive  = 0
+	NatStateClosing = 1
+)
+
 type Manager struct {
 	objects      *bpf.NatObjects
 	ipDetector   ipdetect.Detector
-	privateIP    net.IP
-	tcpTimeout   time.Duration
-	udpTimeout   time.Duration
-	maxMSS       uint16
-	internalNet  uint32
-	internalMask uint32
-	mu           sync.RWMutex
-	isStopping   bool
+	privateIP       net.IP
+	tcpTimeout      time.Duration
+	udpTimeout      time.Duration
+	maxMSS          uint16
+	internalNet     uint32
+	internalMask    uint32
+	batchUpdateSize     uint32
+	restorationFailures uint64
+	mu                  sync.RWMutex
+	isStopping      atomic.Bool
 }
 
 func NewManager(objs *bpf.NatObjects) *Manager {
 	return &Manager{
-		objects:    objs,
-		tcpTimeout: 24 * time.Hour,
-		udpTimeout: 5 * time.Minute,
+		objects:         objs,
+		tcpTimeout:      24 * time.Hour,
+		udpTimeout:      5 * time.Minute,
+		batchUpdateSize: 1000,
 	}
 }
 
 // Shutdown marks the manager as stopping.
 func (m *Manager) Shutdown() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.isStopping = true
+	m.isStopping.Store(true)
 }
 
 func (m *Manager) LoadConfig(cfg *config.Config) error {
-	m.mu.Lock()
-	if m.isStopping {
-		m.mu.Unlock()
+	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
-	m.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	// Parse timeouts
 	m.tcpTimeout = 24 * time.Hour
 	if cfg.TCPTimeout != "" {
@@ -72,6 +79,11 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 		}
 	}
 	m.maxMSS = cfg.MaxMSS
+	if cfg.BatchUpdateSize > 0 {
+		m.batchUpdateSize = cfg.BatchUpdateSize
+	} else {
+		m.batchUpdateSize = 1000
+	}
 
 	if cfg.InternalNet != "" {
 		_, ipnet, err := net.ParseCIDR(cfg.InternalNet)
@@ -155,11 +167,10 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 }
 
 func (m *Manager) SetSNATConfig(externalIP net.IP, maxMSS uint16) error {
-	m.mu.RLock()
-	if m.isStopping {
-		m.mu.RUnlock()
+	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
+	m.mu.RLock()
 	internalNet := m.internalNet
 	internalMask := m.internalMask
 	m.mu.RUnlock()
@@ -177,11 +188,10 @@ func (m *Manager) SetSNATConfig(externalIP net.IP, maxMSS uint16) error {
 }
 
 func (m *Manager) updatePublicIP(ctx context.Context) error {
-	m.mu.RLock()
-	if m.isStopping {
-		m.mu.RUnlock()
+	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
+	m.mu.RLock()
 	maxMSS := m.maxMSS
 	m.mu.RUnlock()
 
@@ -221,10 +231,7 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 			slog.Info("Stopping background tasks")
 			return
 		case <-ipTickerC:
-			m.mu.RLock()
-			stopping := m.isStopping
-			m.mu.RUnlock()
-			if stopping {
+			if m.isStopping.Load() {
 				return
 			}
 			slog.Debug("Triggering periodic public IP detection")
@@ -232,10 +239,7 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 				slog.Error("Periodic public IP detection failed", slog.Any("error", err))
 			}
 		case <-gcTicker.C:
-			m.mu.RLock()
-			stopping := m.isStopping
-			m.mu.RUnlock()
-			if stopping {
+			if m.isStopping.Load() {
 				return
 			}
 			now := uint64(time.Now().UnixNano())
@@ -248,6 +252,15 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 
 // SaveSessions iterates through ConntrackMap and ReverseNatMap and saves the sessions to a file.
 func (m *Manager) SaveSessions(path string) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Ensure directory exists
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create session directory: %w", err)
+	}
+
 	// We allow SaveSessions during shutdown
 	bootTime := getBootTimeUnixNano()
 	snapshot := SessionSnapshot{
@@ -325,12 +338,9 @@ func (m *Manager) SaveSessions(path string) error {
 
 // RestoreSessions reads the session snapshot from a file and loads it into eBPF maps.
 func (m *Manager) RestoreSessions(path string) error {
-	m.mu.RLock()
-	if m.isStopping {
-		m.mu.RUnlock()
+	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
-	m.mu.RUnlock()
 
 	bootTime := getBootTimeUnixNano()
 	nowUnix := time.Now().UnixNano()
@@ -394,7 +404,10 @@ func (m *Manager) RestoreSessions(path string) error {
 	}
 
 	// Load sessions into eBPF maps using chunked batch updates
-	const batchUpdateSize = 1000
+	batchUpdateSize := int(m.batchUpdateSize)
+	if batchUpdateSize <= 0 {
+		batchUpdateSize = 1000
+	}
 
 	if len(conntrackKeys) > 0 {
 		for i := 0; i < len(conntrackKeys); i += batchUpdateSize {
@@ -412,6 +425,7 @@ func (m *Manager) RestoreSessions(path string) error {
 					slog.Int("updated_in_chunk", n),
 					slog.Int("chunk_total", len(chunkKeys)),
 					slog.Any("error", err))
+				atomic.AddUint64(&m.restorationFailures, uint64(len(chunkKeys)-n))
 			}
 		}
 	}
@@ -432,6 +446,7 @@ func (m *Manager) RestoreSessions(path string) error {
 					slog.Int("updated_in_chunk", n),
 					slog.Int("chunk_total", len(chunkKeys)),
 					slog.Any("error", err))
+				atomic.AddUint64(&m.restorationFailures, uint64(len(chunkKeys)-n))
 			}
 		}
 	}
@@ -445,12 +460,9 @@ func (m *Manager) RestoreSessions(path string) error {
 }
 
 func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {
-	m.mu.RLock()
-	if m.isStopping {
-		m.mu.RUnlock()
+	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
-	m.mu.RUnlock()
 
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
@@ -469,12 +481,9 @@ func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, prot
 }
 
 func (m *Manager) AddDNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, protocol uint8, transIP net.IP, transPort uint16) error {
-	m.mu.RLock()
-	if m.isStopping {
-		m.mu.RUnlock()
+	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
-	m.mu.RUnlock()
 
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
@@ -515,4 +524,8 @@ func htons(i uint16) uint16 {
 	b := make([]byte, 2)
 	binary.BigEndian.PutUint16(b, i)
 	return binary.LittleEndian.Uint16(b)
+}
+
+func (m *Manager) GetRestorationFailures() uint64 {
+	return atomic.LoadUint64(&m.restorationFailures)
 }

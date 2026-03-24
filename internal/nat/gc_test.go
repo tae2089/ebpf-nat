@@ -233,8 +233,68 @@ func TestGarbageCollector_BatchRun(t *testing.T) {
 				t.Errorf("Active session wrongly deleted from conntrack_map: key=%+v", s.key)
 			}
 			if revErr != nil {
-				t.Errorf("Active session wrongly deleted from reverse_nat_map: revKey=%+v", s.revKey)
+				t.Errorf("Active session wrongly deleted from reverse_nat_map: key=%+v", s.key)
 			}
 		}
+	}
+}
+
+func TestGarbageCollector_StateAwareTimeout(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conntrackMap, err := ebpf.NewMap(spec.Maps["conntrack_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conntrackMap.Close()
+
+	reverseNatMap, err := ebpf.NewMap(spec.Maps["reverse_nat_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseNatMap.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap:  conntrackMap,
+			ReverseNatMap: reverseNatMap,
+		},
+	}
+
+	now := uint64(time.Now().UnixNano())
+	tcpTimeout := 24 * time.Hour
+	udpTimeout := 5 * time.Minute
+
+	// Session 1: Active TCP, 5 minutes old (should stay)
+	activeKey := bpf.NatNatKey{SrcIp: 1, DstIp: 2, SrcPort: 100, DstPort: 200, Protocol: syscall.IPPROTO_TCP}
+	activeEntry := bpf.NatNatEntry{TranslatedIp: 10, TranslatedPort: 1000, State: NatStateActive, LastSeen: now - uint64(5*time.Minute.Nanoseconds())}
+	conntrackMap.Update(activeKey, activeEntry, 0)
+
+	// Session 2: Closing TCP, 5 minutes old (should be evicted because closing timeout is 2m)
+	closingKey := bpf.NatNatKey{SrcIp: 3, DstIp: 4, SrcPort: 300, DstPort: 400, Protocol: syscall.IPPROTO_TCP}
+	closingEntry := bpf.NatNatEntry{TranslatedIp: 11, TranslatedPort: 1100, State: NatStateClosing, LastSeen: now - uint64(5*time.Minute.Nanoseconds())}
+	conntrackMap.Update(closingKey, closingEntry, 0)
+
+	// 2. Run GC
+	gc := NewGarbageCollector(objs, tcpTimeout, udpTimeout)
+	if err := gc.RunOnce(context.Background(), now); err != nil {
+		t.Fatalf("RunOnce failed: %v", err)
+	}
+
+	// 3. Verify
+	var entry bpf.NatNatEntry
+	if err := conntrackMap.Lookup(activeKey, &entry); err != nil {
+		t.Errorf("Active session (5m old) was incorrectly evicted")
+	}
+
+	if err := conntrackMap.Lookup(closingKey, &entry); err == nil {
+		t.Errorf("Closing session (5m old) should have been evicted")
 	}
 }

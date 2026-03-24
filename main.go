@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,6 +54,7 @@ func init() {
 	rootCmd.Flags().StringVar(&cfg.UDPTimeout, "udp-timeout", "5m", "UDP session timeout")
 	rootCmd.Flags().Uint16Var(&cfg.MaxMSS, "max-mss", 0, "TCP MSS clamping value (0 to disable)")
 	rootCmd.Flags().Uint32Var(&cfg.MaxSessions, "max-sessions", 65536, "Maximum NAT sessions")
+	rootCmd.Flags().Uint32Var(&cfg.BatchUpdateSize, "batch-update-size", 1000, "Batch update size for session restoration")
 	rootCmd.Flags().StringVar(&cfg.SessionFile, "session-file", "/var/lib/ebpf-nat/sessions.gob", "Path to save/restore sessions")
 
 	rootCmd.Flags().BoolVar(&cfg.Metrics.Enabled, "metrics-enabled", false, "Enable Prometheus metrics")
@@ -62,6 +63,12 @@ func init() {
 }
 
 func run() {
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		slog.Error("Configuration validation failed", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	// Set log level
 	logLevel := slog.LevelInfo
 	if debug {
@@ -138,16 +145,26 @@ func run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var wg sync.WaitGroup
+
 	if debug {
-		go bpf.StartTracePipeLogger(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bpf.StartTracePipeLogger(ctx)
+		}()
 	}
 
 	// Start background tasks
-	go natMgr.RunBackgroundTasks(ctx, ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		natMgr.RunBackgroundTasks(ctx, ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)
+	}()
 
 	// Start metrics server if enabled
 	if cfg.Metrics.Enabled {
-		metrics.NewScraper(&objs, prometheus.DefaultRegisterer)
+		metrics.NewScraper(&objs, natMgr, prometheus.DefaultRegisterer)
 		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Address, cfg.Metrics.Port)
 
 		mux := http.NewServeMux()
@@ -158,14 +175,18 @@ func run() {
 			Handler: mux,
 		}
 
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			slog.Info("Starting metrics server", slog.String("addr", addr))
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("Metrics server failed", slog.Any("error", err))
 			}
 		}()
 
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			<-ctx.Done()
 			slog.Info("Shutting down metrics server")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -243,13 +264,14 @@ func run() {
 
 	slog.Info("Shutting down gracefully...")
 
-	// 1. Mark manager as stopping to prevent new map updates
+	// 1. Mark manager as stopping and cancel context to stop background tasks
 	natMgr.Shutdown()
-	cancel() // Stop background tasks (GC, IP detection)
+	cancel()
 
 	// 2. Detach eBPF programs first to stop processing new packets
 	slog.Info("Detaching eBPF programs from interface", slog.String("interface", cfg.Interface))
 
+	// Detach filters - continue even if one fails
 	if err := netlink.FilterDel(filterIngress); err != nil {
 		slog.Error("Failed to detach ingress filter", slog.Any("error", err))
 	} else {
@@ -262,19 +284,32 @@ func run() {
 		slog.Debug("Successfully detached egress filter")
 	}
 
-	// 3. Save sessions now that no new sessions are being created
+	// 3. Wait for all background tasks to complete with a timeout
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// Create a timeout for the shutdown process
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	select {
+	case <-done:
+		slog.Info("All background tasks stopped")
+	case <-shutdownCtx.Done():
+		slog.Warn("Shutdown timed out waiting for background tasks")
+	}
+
+	// 4. Save sessions now that everything is stopped
 	if cfg.SessionFile != "" {
-		dir := filepath.Dir(cfg.SessionFile)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			slog.Error("Failed to create session directory", slog.String("dir", dir), slog.Any("error", err))
-		}
-		// Always attempt to save even if directory creation failed (it might already exist)
 		if err := natMgr.SaveSessions(cfg.SessionFile); err != nil {
 			slog.Error("Failed to save sessions", slog.String("path", cfg.SessionFile), slog.Any("error", err))
 		}
 	}
 
-	slog.Info("Exiting...")
+	slog.Info("Shutdown complete, exiting...")
 }
 
 func main() {

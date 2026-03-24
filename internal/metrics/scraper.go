@@ -9,18 +9,25 @@ import (
 	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
-type Scraper struct {
-	objects           *bpf.NatObjects
-	packetsTotal      *prometheus.Desc
-	bytesTotal        *prometheus.Desc
-	activeSessions    *prometheus.Desc
-	allocFailures     *prometheus.Desc
-	mapUpdateFailures *prometheus.Desc
+type Manager interface {
+	GetRestorationFailures() uint64
 }
 
-func NewScraper(objs *bpf.NatObjects, reg prometheus.Registerer) *Scraper {
+type Scraper struct {
+	objects             *bpf.NatObjects
+	manager             Manager
+	packetsTotal        *prometheus.Desc
+	bytesTotal          *prometheus.Desc
+	activeSessions      *prometheus.Desc
+	allocFailures       *prometheus.Desc
+	mapUpdateFailures   *prometheus.Desc
+	restorationFailures *prometheus.Desc
+}
+
+func NewScraper(objs *bpf.NatObjects, mgr Manager, reg prometheus.Registerer) *Scraper {
 	s := &Scraper{
 		objects: objs,
+		manager: mgr,
 		packetsTotal: prometheus.NewDesc(
 			"ebpf_nat_packets_total",
 			"Total number of packets processed by eBPF NAT",
@@ -51,6 +58,12 @@ func NewScraper(objs *bpf.NatObjects, reg prometheus.Registerer) *Scraper {
 			[]string{"protocol"},
 			nil,
 		),
+		restorationFailures: prometheus.NewDesc(
+			"ebpf_nat_session_restoration_failures_total",
+			"Total number of failed session restoration attempts from persistence",
+			nil,
+			nil,
+		),
 	}
 
 	if reg != nil {
@@ -66,11 +79,20 @@ func (s *Scraper) Describe(ch chan<- *prometheus.Desc) {
 	ch <- s.activeSessions
 	ch <- s.allocFailures
 	ch <- s.mapUpdateFailures
+	ch <- s.restorationFailures
 }
 
 func (s *Scraper) Collect(ch chan<- prometheus.Metric) {
 	s.collectFromMetricsMap(ch)
 	s.collectActiveSessions(ch)
+	s.collectRestorationFailures(ch)
+}
+
+func (s *Scraper) collectRestorationFailures(ch chan<- prometheus.Metric) {
+	if s.manager != nil {
+		count := s.manager.GetRestorationFailures()
+		ch <- prometheus.MustNewConstMetric(s.restorationFailures, prometheus.CounterValue, float64(count))
+	}
 }
 
 func (s *Scraper) collectFromMetricsMap(ch chan<- prometheus.Metric) {
@@ -126,9 +148,9 @@ func countMapEntries(m *ebpf.Map) uint64 {
 	}
 	var count uint64
 	iter := m.Iterate()
-	// Use any to avoid specific type dependency for counting
-	var key any
-	var value any
+	// Use raw bytes to avoid specific type dependency while being safe for any map
+	key := make([]byte, m.KeySize())
+	value := make([]byte, m.ValueSize())
 	for iter.Next(&key, &value) {
 		count++
 	}

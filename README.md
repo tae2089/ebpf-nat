@@ -64,6 +64,8 @@ sudo ./scripts/install.sh
 |--------|------|--------|
 | `--interface` | eBPF를 적용할 네트워크 인터페이스 | (필수) |
 | `--masquerade` | 동적 SNAT 활성화 여부 | `true` |
+| `--max-sessions` | 최대 NAT 세션 수 | `65536` |
+| `--batch-update-size` | 세션 복원 시 일괄 업데이트 크기 | `1000` |
 | `--session-file` | 세션 정보를 저장/복원할 경로 | `/var/lib/ebpf-nat/sessions.gob` |
 | `--metrics-enabled` | Prometheus 메트릭 활성화 | `false` |
 | `--metrics-port` | 메트릭 서버 포트 | `9090` |

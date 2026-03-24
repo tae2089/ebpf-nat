@@ -260,6 +260,35 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
                     update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
                     return apply_nat_icmp_error(skb, inner_entry);
                 }
+            } else {
+                // Egress ICMP Error: Internal host sends error for incoming DNAT/SNAT packet
+                struct iphdr *inner_iph = (void *)(ih + 1);
+                if ((void *)(inner_iph + 1) > data_end) return TC_ACT_OK;
+
+                struct nat_key lookup_key = {0};
+                lookup_key.src_ip = inner_iph->daddr;
+                lookup_key.dst_ip = inner_iph->saddr;
+                lookup_key.protocol = inner_iph->protocol;
+
+                if ((void *)(data + 66) > data_end) return TC_ACT_OK;
+                __be16 *inner_ports = (void *)(data + 62);
+                lookup_key.src_port = bpf_ntohs(inner_ports[1]);
+                lookup_key.dst_port = bpf_ntohs(inner_ports[0]);
+
+                // 1. Check if it's a response to a DNATed packet
+                struct nat_entry *inner_entry = bpf_map_lookup_elem(&dnat_rules, &lookup_key);
+                if (inner_entry) {
+                    update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+                    return apply_nat_icmp_error(skb, inner_entry);
+                }
+
+                // 2. Check if it's a response to a dynamic SNAT (Reverse check)
+                // If External client sent a packet to our SNATed IP:Port, we have a conntrack entry
+                inner_entry = bpf_map_lookup_elem(&conntrack_map, &lookup_key);
+                if (inner_entry) {
+                    update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+                    return apply_nat_icmp_error(skb, inner_entry);
+                }
             }
             return TC_ACT_OK;
         } else {
@@ -275,7 +304,9 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     if (is_ingress) {
         struct nat_entry *entry = bpf_map_lookup_elem(&reverse_nat_map, &key);
         if (entry) {
-            if (!is_tcp_fin_rst) {
+            if (is_tcp_fin_rst) {
+                entry->state = NAT_STATE_CLOSING;
+            } else {
                 entry->last_seen = bpf_ktime_get_ns();
             }
             update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
@@ -315,7 +346,9 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     } else {
         struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
         if (entry) {
-            if (!is_tcp_fin_rst) {
+            if (is_tcp_fin_rst) {
+                entry->state = NAT_STATE_CLOSING;
+            } else {
                 entry->last_seen = bpf_ktime_get_ns();
             }
             update_metrics(key.protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
@@ -412,7 +445,7 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
 
         if (allocated_port == 0) {
             update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_ALLOC_FAIL, skb->len);
-            return TC_ACT_OK;
+            return TC_ACT_SHOT;
         }
 
         struct nat_entry forward_entry = {
@@ -420,7 +453,8 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             .translated_port = allocated_port,
             .last_seen = bpf_ktime_get_ns(),
         };
-        if (bpf_map_update_elem(&conntrack_map, &key, &forward_entry, BPF_ANY) != 0) {
+        long ret = bpf_map_update_elem(&conntrack_map, &key, &forward_entry, BPF_ANY);
+        if (ret != 0) {
             update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_MAP_UPDATE_FAIL, skb->len);
             return TC_ACT_SHOT;
         }
@@ -442,7 +476,8 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             .translated_port = key.src_port,
             .last_seen = bpf_ktime_get_ns(),
         };
-        if (bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY) != 0) {
+        ret = bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY);
+        if (ret != 0) {
             bpf_map_delete_elem(&conntrack_map, &key);
             update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_MAP_UPDATE_FAIL, skb->len);
             return TC_ACT_SHOT;

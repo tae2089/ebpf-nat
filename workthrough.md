@@ -1,0 +1,21 @@
+# Workthrough: NAT Robustness and Observability Improvements
+
+- **2026-03-24**: 
+    - Initial implementation of Task 1-4 from the plan `docs/superpowers/plans/2026-03-24-nat-robustness-improvements.md`.
+    - Performed code review using `code-reviewer` agent.
+    - Review identified improvements: shutdown timeout, configurable batch size, more tests, and restoration metrics.
+    - Created `task.md`, `implementation.md`, and `workthrough.md` to track these refinements.
+- **2026-03-25**:
+    - Refactored `Manager.isStopping` to use `atomic.Bool` for improved concurrency safety.
+    - Enhanced `main.go` shutdown sequence using `sync.WaitGroup` to ensure all background tasks (GC, IP detection, Metrics) exit gracefully.
+    - Added a 10-second timeout for the shutdown process.
+    - Verified `nat.c` uses `BPF_MAP_TYPE_LRU_HASH` for session maps.
+    - Added edge-case tests: `TestMapFullLRU` and `TestMapConflict`.
+    - Added CLI flags: `--max-sessions` and `--batch-update-size`.
+    - Fixed build error in `manager_test.go` (invalid `len()` on structs).
+    - Added `Config.Validate()` for upfront parameter validation and added unit tests.
+    - Implemented exponential backoff retry logic in `AutoDetector`.
+    - Implemented State-aware TCP session tracking (`ACTIVE` vs `CLOSING`) in BPF and GC.
+    - Implemented Egress ICMP Error NAT support for full ICMP compatibility.
+    - Increased `PORT_SCAN_LIMIT` to 128 for better scalability.
+    - Verified all changes with `make test`.

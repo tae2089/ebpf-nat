@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 )
 
 // AutoDetector iterates through a list of detectors and returns the first success.
@@ -27,20 +28,39 @@ func (d *AutoDetector) Name() string {
 }
 
 func (d *AutoDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
-	var errs []error
+	var lastErr error
+	
+	// Try each detector with limited retries for transient network issues
 	for _, detector := range d.Detectors {
-		ip, err := detector.GetPublicIP(ctx)
-		if err == nil {
-			slog.Info("Public IP detected", 
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				wait := time.Duration(attempt*attempt) * time.Second
+				slog.Debug("Retrying IP detection", 
+					slog.String("detector", detector.Name()), 
+					slog.Int("attempt", attempt+1),
+					slog.Duration("wait", wait))
+				
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
+			}
+
+			ip, err := detector.GetPublicIP(ctx)
+			if err == nil {
+				slog.Info("Public IP detected", 
+					slog.String("detector", detector.Name()), 
+					slog.String("ip", ip.String()))
+				return ip, nil
+			}
+			lastErr = err
+			slog.Debug("Detection attempt failed", 
 				slog.String("detector", detector.Name()), 
-				slog.String("ip", ip.String()))
-			return ip, nil
+				slog.Int("attempt", attempt+1),
+				slog.Any("error", err))
 		}
-		slog.Debug("Detection failed, trying next", 
-			slog.String("detector", detector.Name()), 
-			slog.Any("error", err))
-		errs = append(errs, fmt.Errorf("%s: %w", detector.Name(), err))
 	}
 
-	return nil, fmt.Errorf("all detection methods failed: %v", errs)
+	return nil, fmt.Errorf("all detection methods failed. Last error: %w", lastErr)
 }

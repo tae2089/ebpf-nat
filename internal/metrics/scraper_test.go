@@ -13,7 +13,7 @@ import (
 func TestNewScraper(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	objs := &bpf.NatObjects{}
-	scraper := NewScraper(objs, reg)
+	scraper := NewScraper(objs, nil, reg)
 
 	if scraper == nil {
 		t.Fatal("NewScraper returned nil")

@@ -14,16 +14,18 @@ import (
 const defaultBatchSize = 256
 
 type GarbageCollector struct {
-	objects    *bpf.NatObjects
-	tcpTimeout time.Duration
-	udpTimeout time.Duration
+	objects           *bpf.NatObjects
+	tcpTimeout        time.Duration
+	tcpClosingTimeout time.Duration
+	udpTimeout        time.Duration
 }
 
 func NewGarbageCollector(objs *bpf.NatObjects, tcpTimeout, udpTimeout time.Duration) *GarbageCollector {
 	return &GarbageCollector{
-		objects:    objs,
-		tcpTimeout: tcpTimeout,
-		udpTimeout: udpTimeout,
+		objects:           objs,
+		tcpTimeout:        tcpTimeout,
+		tcpClosingTimeout: 2 * time.Minute,
+		udpTimeout:        udpTimeout,
 	}
 }
 
@@ -70,13 +72,17 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 			entry := values[i]
 
 			var timeout time.Duration
-			switch key.Protocol {
-			case syscall.IPPROTO_TCP:
-				timeout = gc.tcpTimeout
-			case syscall.IPPROTO_UDP:
-				timeout = gc.udpTimeout
-			default:
-				timeout = gc.udpTimeout
+			if entry.State == NatStateClosing {
+				timeout = gc.tcpClosingTimeout
+			} else {
+				switch key.Protocol {
+				case syscall.IPPROTO_TCP:
+					timeout = gc.tcpTimeout
+				case syscall.IPPROTO_UDP:
+					timeout = gc.udpTimeout
+				default:
+					timeout = gc.udpTimeout
+				}
 			}
 
 			age := now - entry.LastSeen
