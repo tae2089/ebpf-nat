@@ -5,8 +5,8 @@ import (
 	"strconv"
 
 	"github.com/cilium/ebpf"
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
 type Scraper struct {

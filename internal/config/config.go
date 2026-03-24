@@ -1,53 +1,31 @@
 package config
 
-import (
-	"os"
-	"log/slog"
-
-	"github.com/tae2089/trace"
-	"gopkg.in/yaml.v3"
-)
-
 type Config struct {
-	Interface    string `yaml:"interface"`
-	Masquerade   bool   `yaml:"masquerade"`
-	ExternalIP   string `yaml:"external_ip,omitempty"`
-	IPDetectType string `yaml:"ip_detect_type,omitempty"` // generic, aws, gcp, auto
-	GCInterval   string `yaml:"gc_interval,omitempty"`    // e.g., "1m"
-	TCPTimeout   string `yaml:"tcp_timeout,omitempty"`    // e.g., "24h"
-	UDPTimeout   string `yaml:"udp_timeout,omitempty"`    // e.g., "5m"
-	Metrics      MetricsConfig `yaml:"metrics"`
-	SNAT         []Rule `yaml:"snat"`
-	DNAT         []Rule `yaml:"dnat"`
+	Interface    string
+	Masquerade   bool
+	ExternalIP   string
+	IPDetectType string // generic, aws, gcp, auto
+	GCInterval   string // e.g., "1m"
+	TCPTimeout   string // e.g., "24h"
+	UDPTimeout   string // e.g., "5m"
+	SessionFile  string // path to save/restore sessions
+	Metrics      MetricsConfig
+	SNAT         []Rule
+	DNAT         []Rule
 }
 
 type MetricsConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Address string `yaml:"address"`
-	Port    int    `yaml:"port"`
+	Enabled bool
+	Address string
+	Port    int
 }
 
 type Rule struct {
-	SrcIP    string `yaml:"src_ip,omitempty"`
-	DstIP    string `yaml:"dst_ip,omitempty"`
-	SrcPort  uint16 `yaml:"src_port,omitempty"`
-	DstPort  uint16 `yaml:"dst_port,omitempty"`
-	Protocol string `yaml:"protocol"`
-	TransIP  string `yaml:"trans_ip"`
-	TransPort uint16 `yaml:"trans_port"`
-}
-
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	slog.Info("Configuration loaded successfully", slog.String("path", path))
-	return &cfg, nil
+	SrcIP    string
+	DstIP    string
+	SrcPort  uint16
+	DstPort  uint16
+	Protocol string
+	TransIP  string
+	TransPort uint16
 }

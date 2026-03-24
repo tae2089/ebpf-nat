@@ -7,8 +7,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
 func TestMetricsMapExists(t *testing.T) {
@@ -74,7 +74,7 @@ func TestMetricsIncrement(t *testing.T) {
 		Direction: 1,  // Egress
 		Action:    0,  // Translated
 	}
-	
+
 	// PERCPU map returns a slice of values
 	var values []bpf.NatMetricsValue
 	if err := objs.MetricsMap.Lookup(key, &values); err != nil {

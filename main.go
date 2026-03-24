@@ -5,76 +5,67 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/imtaebin/ebpf-nat/internal/bpf"
-	"github.com/imtaebin/ebpf-nat/internal/config"
-	"github.com/imtaebin/ebpf-nat/internal/nat"
-	"github.com/imtaebin/ebpf-nat/internal/metrics"
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/spf13/cobra"
+	"github.com/tae2089/ebpf-nat/internal/bpf"
+	"github.com/tae2089/ebpf-nat/internal/config"
+	"github.com/tae2089/ebpf-nat/internal/metrics"
+	"github.com/tae2089/ebpf-nat/internal/nat"
 	"github.com/vishvananda/netlink"
-	"github.com/cilium/ebpf/rlimit"
 )
 
-func main() {
-	configPath := flag.String("config", "config.yaml", "Path to configuration file")
-	debug := flag.Bool("debug", false, "Enable debug logging and BPF tracing")
-	ipDetectType := flag.String("ip-detect-type", "", "IP detection type (generic, aws, gcp, auto)")
-	ipDetectInterval := flag.Duration("ip-detect-interval", 5*time.Minute, "IP detection interval")
-	gcIntervalStr := flag.String("gc-interval", "", "Garbage collection interval (e.g., 1m)")
-	tcpTimeoutStr := flag.String("tcp-timeout", "", "TCP session timeout (e.g., 24h)")
-	udpTimeoutStr := flag.String("udp-timeout", "", "UDP session timeout (e.g., 5m)")
-	metricsEnabled := flag.Bool("metrics-enabled", false, "Enable Prometheus metrics")
-	metricsPort := flag.Int("metrics-port", 0, "Prometheus metrics port")
-	flag.Parse()
+var (
+	cfg              = &config.Config{}
+	debug            bool
+	ipDetectInterval time.Duration
+)
 
+var rootCmd = &cobra.Command{
+	Use:   "ebpf-nat",
+	Short: "High-performance TC-based NAT with eBPF",
+	Run: func(cmd *cobra.Command, args []string) {
+		run()
+	},
+}
+
+func init() {
+	rootCmd.Flags().StringVarP(&cfg.Interface, "interface", "i", "", "Network interface to attach eBPF (required)")
+	rootCmd.MarkFlagRequired("interface")
+
+	rootCmd.Flags().BoolVarP(&debug, "debug", "d", false, "Enable debug logging and BPF tracing")
+	rootCmd.Flags().BoolVarP(&cfg.Masquerade, "masquerade", "m", true, "Enable dynamic SNAT (masquerading)")
+	rootCmd.Flags().StringVar(&cfg.ExternalIP, "external-ip", "", "Static external IP for SNAT (overrides detection)")
+	rootCmd.Flags().StringVar(&cfg.IPDetectType, "ip-detect-type", "auto", "IP detection type (generic, aws, gcp, auto)")
+	rootCmd.Flags().DurationVar(&ipDetectInterval, "ip-detect-interval", 5*time.Minute, "IP detection interval")
+	rootCmd.Flags().StringVar(&cfg.GCInterval, "gc-interval", "1m", "Garbage collection interval")
+	rootCmd.Flags().StringVar(&cfg.TCPTimeout, "tcp-timeout", "24h", "TCP session timeout")
+	rootCmd.Flags().StringVar(&cfg.UDPTimeout, "udp-timeout", "5m", "UDP session timeout")
+	rootCmd.Flags().StringVar(&cfg.SessionFile, "session-file", "/var/lib/ebpf-nat/sessions.gob", "Path to save/restore sessions")
+
+	rootCmd.Flags().BoolVar(&cfg.Metrics.Enabled, "metrics-enabled", false, "Enable Prometheus metrics")
+	rootCmd.Flags().StringVar(&cfg.Metrics.Address, "metrics-address", "0.0.0.0", "Prometheus metrics listen address")
+	rootCmd.Flags().IntVar(&cfg.Metrics.Port, "metrics-port", 9090, "Prometheus metrics port")
+}
+
+func run() {
 	// Set log level
 	logLevel := slog.LevelInfo
-	if *debug {
+	if debug {
 		logLevel = slog.LevelDebug
 	}
 	opts := &slog.HandlerOptions{Level: logLevel}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, opts)))
-
-	// Load configuration
-	cfg, err := config.LoadConfig(*configPath)
-	if err != nil {
-		slog.Error("Failed to load config", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	if cfg.Interface == "" {
-		slog.Error("Network interface name is required in config")
-		os.Exit(1)
-	}
-
-	// Override config with flags if provided
-	if *ipDetectType != "" {
-		cfg.IPDetectType = *ipDetectType
-	}
-	if *gcIntervalStr != "" {
-		cfg.GCInterval = *gcIntervalStr
-	}
-	if *tcpTimeoutStr != "" {
-		cfg.TCPTimeout = *tcpTimeoutStr
-	}
-	if *udpTimeoutStr != "" {
-		cfg.UDPTimeout = *udpTimeoutStr
-	}
-	if *metricsEnabled {
-		cfg.Metrics.Enabled = true
-	}
-	if *metricsPort != 0 {
-		cfg.Metrics.Port = *metricsPort
-	}
 
 	// Parse duration settings with defaults
 	gcInterval := 1 * time.Minute
@@ -110,32 +101,32 @@ func main() {
 	}
 	defer objs.Close()
 
-	// Initialize NAT Manager and load rules
+	// Initialize NAT Manager and apply config
 	natMgr := nat.NewManager(&objs)
 	if err := natMgr.LoadConfig(cfg); err != nil {
-		slog.Error("Failed to load NAT rules from config", slog.Any("error", err))
+		slog.Error("Failed to apply NAT configuration", slog.Any("error", err))
 		os.Exit(1)
+	}
+
+	// Restore sessions if the session file exists
+	if cfg.SessionFile != "" {
+		if err := natMgr.RestoreSessions(cfg.SessionFile); err != nil {
+			slog.Error("Failed to restore sessions", slog.String("path", cfg.SessionFile), slog.Any("error", err))
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if *debug {
+	if debug {
 		go bpf.StartTracePipeLogger(ctx)
 	}
 
 	// Start background tasks
-	go natMgr.RunBackgroundTasks(ctx, *ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)
+	go natMgr.RunBackgroundTasks(ctx, ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)
 
 	// Start metrics server if enabled
 	if cfg.Metrics.Enabled {
-		if cfg.Metrics.Port == 0 {
-			cfg.Metrics.Port = 9090
-		}
-		if cfg.Metrics.Address == "" {
-			cfg.Metrics.Address = "0.0.0.0"
-		}
-
 		metrics.NewScraper(&objs, prometheus.DefaultRegisterer)
 		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Address, cfg.Metrics.Port)
 
@@ -231,5 +222,26 @@ func main() {
 	<-stop
 
 	cancel() // Stop background tasks
+
+	// Save sessions if configured
+	if cfg.SessionFile != "" {
+		// Ensure the directory exists
+		dir := filepath.Dir(cfg.SessionFile)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			slog.Error("Failed to create session directory", slog.String("dir", dir), slog.Any("error", err))
+		} else {
+			if err := natMgr.SaveSessions(cfg.SessionFile); err != nil {
+				slog.Error("Failed to save sessions", slog.String("path", cfg.SessionFile), slog.Any("error", err))
+			}
+		}
+	}
+
 	slog.Info("Detaching eBPF program and exiting...")
+}
+
+func main() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 }
