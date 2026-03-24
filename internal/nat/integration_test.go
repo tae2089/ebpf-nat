@@ -5,6 +5,7 @@ package nat
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os/exec"
@@ -415,6 +416,45 @@ func TestNATConnectivity(t *testing.T) {
 			t.Fatal("No sessions restored in ConntrackMap")
 		}
 		t.Logf("Successfully restored %d sessions", count)
+	})
+
+	// 6. Anti-Spoofing Test
+	t.Run("AntiSpoofing", func(t *testing.T) {
+		// Enable anti-spoofing for 192.168.1.0/24
+		internalNet := "192.168.1.0/24"
+		_, ipnet, _ := net.ParseCIDR(internalNet)
+		
+		// Update BPF config directly
+		if err := objs.SnatConfigMap.Update(uint32(0), bpf.NatSnatConfig{
+			ExternalIp:   ipToUint32(externalIP),
+			InternalNet:  ipToUint32(ipnet.IP),
+			InternalMask: binary.LittleEndian.Uint32(ipnet.Mask),
+		}, 0); err != nil {
+			t.Fatal(err)
+		}
+
+		// Try to send a packet with a spoofed IP from internal NS
+		err := env.runInNS(env.internalNS, func() error {
+			// Add a spoofed IP to the interface
+			runCmd("ip addr add 1.2.3.4/24 dev veth-int")
+			defer runCmd("ip addr del 1.2.3.4/24 dev veth-int")
+
+			// ping from spoofed IP should fail (dropped by eBPF)
+			out, err := runCmd("ping -c 1 -W 1 -I 1.2.3.4 10.0.0.10")
+			if err == nil {
+				return fmt.Errorf("expected spoofed ping to fail, but it succeeded: %s", out)
+			}
+			t.Logf("Spoofed ping failed as expected: %v", err)
+			return nil
+		})
+		if err != nil {
+			t.Errorf("Anti-spoofing test failed: %v", err)
+		}
+		
+		// Reset config to disable anti-spoofing for other tests if any
+		objs.SnatConfigMap.Update(uint32(0), bpf.NatSnatConfig{
+			ExternalIp: ipToUint32(externalIP),
+		}, 0)
 	})
 
 	// Give some time for BPF logs
