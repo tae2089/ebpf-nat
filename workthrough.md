@@ -78,3 +78,8 @@
       - **검증 강화: MaxSessions 하한값 추가** — `config.go`에서 `MaxSessions`가 0이 아닌데 8 미만이면 에러 반환. BPF LRU 맵의 최소 유효 크기 보장.
       - **BPF: QinQ 주석 개선** — QinQ inner 태그 스트리핑을 구현했으나 BPF verifier 복잡도 제한(1M insn)에 근접하여 제거. 단일 레이어 지원임을 주석으로 명시.
       - **테스트 추가** — `TestGarbageCollector_ClockSkewProtection`(미래 타임스탬프 보호), `MaxSessions` 검증 3건 추가. 전체 테스트(config 20건, nat 18건 포함) PASS.
+    - **코드 리뷰 기반 버그 수정 및 테스트 보완 (Iteration 2)**:
+      - **Bug: SetSNATConfig RLock → Lock으로 교체** — `setSNATConfigLocked`는 `m.internalNet`/`m.internalMask`를 읽어 BPF 맵에 쓰는 쓰기 작업인데 `RLock`으로 보호되어 있어, 동시에 `LoadConfig`가 해당 필드를 쓸 경우 data race 발생 가능. `Lock`으로 교체하여 명확한 쓰기 직렬화 보장.
+      - **Bug: AddSNATRule/AddDNATRule IPv6 입력 시 0.0.0.0 변환 방지** — `net.IP.To4()`가 nil을 반환하는 IPv6 주소는 `ipToUint32()`에서 0.0.0.0(와일드카드)으로 변환됨. non-nil IPv6 입력 시 명시적 에러 반환 추가. nil은 의도적 와일드카드이므로 허용.
+      - **Bug: collectFromMetricsMap 부분 메트릭 전송 방지** — 순회 중 에러 발생 시 이미 채널로 전송된 부분 메트릭이 Prometheus에 노출되어 실제보다 낮은 카운터 값이 보고되는 문제. 메트릭을 버퍼에 쌓은 후 완전 수집 확인 후에만 채널 전송.
+      - **테스트 추가** — `TestAddSNATRule_IPv6Rejected`, `TestAddDNATRule_IPv6Rejected` 추가. 전체 테스트(nat 20건 포함) PASS.
