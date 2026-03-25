@@ -202,6 +202,54 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "valid ip-detect-type generic",
+			config: Config{
+				Interface:    "eth0",
+				IPDetectType: "generic",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid ip-detect-type aws",
+			config: Config{
+				Interface:    "eth0",
+				IPDetectType: "aws",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid ip-detect-type gcp",
+			config: Config{
+				Interface:    "eth0",
+				IPDetectType: "gcp",
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid ip-detect-type auto",
+			config: Config{
+				Interface:    "eth0",
+				IPDetectType: "auto",
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid ip-detect-type rejected",
+			config: Config{
+				Interface:    "eth0",
+				IPDetectType: "azure",
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty ip-detect-type accepted",
+			config: Config{
+				Interface:    "eth0",
+				IPDetectType: "",
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

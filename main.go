@@ -58,7 +58,7 @@ func init() {
 	rootCmd.Flags().StringVar(&cfg.SessionFile, "session-file", "/var/lib/ebpf-nat/sessions.gob", "Path to save/restore sessions")
 
 	rootCmd.Flags().BoolVar(&cfg.Metrics.Enabled, "metrics-enabled", false, "Enable Prometheus metrics")
-	rootCmd.Flags().StringVar(&cfg.Metrics.Address, "metrics-address", "0.0.0.0", "Prometheus metrics listen address")
+	rootCmd.Flags().StringVar(&cfg.Metrics.Address, "metrics-address", "127.0.0.1", "Prometheus metrics listen address")
 	rootCmd.Flags().IntVar(&cfg.Metrics.Port, "metrics-port", 9090, "Prometheus metrics port")
 }
 
@@ -77,23 +77,11 @@ func run() {
 	opts := &slog.HandlerOptions{Level: logLevel}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, opts)))
 
-	// Parse duration settings with defaults
+	// Parse GC interval (timeout values are handled by Manager.LoadConfig)
 	gcInterval := 1 * time.Minute
 	if cfg.GCInterval != "" {
 		if d, err := time.ParseDuration(cfg.GCInterval); err == nil {
 			gcInterval = d
-		}
-	}
-	tcpTimeout := 24 * time.Hour
-	if cfg.TCPTimeout != "" {
-		if d, err := time.ParseDuration(cfg.TCPTimeout); err == nil {
-			tcpTimeout = d
-		}
-	}
-	udpTimeout := 5 * time.Minute
-	if cfg.UDPTimeout != "" {
-		if d, err := time.ParseDuration(cfg.UDPTimeout); err == nil {
-			udpTimeout = d
 		}
 	}
 
@@ -159,7 +147,7 @@ func run() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		natMgr.RunBackgroundTasks(ctx, ipDetectInterval, gcInterval, tcpTimeout, udpTimeout)
+		natMgr.RunBackgroundTasks(ctx, ipDetectInterval, gcInterval)
 	}()
 
 	// Start metrics server if enabled
@@ -171,8 +159,12 @@ func run() {
 		mux.Handle("/metrics", promhttp.Handler())
 
 		server := &http.Server{
-			Addr:    addr,
-			Handler: mux,
+			Addr:              addr,
+			Handler:           mux,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
 		}
 
 		wg.Add(1)
@@ -191,7 +183,9 @@ func run() {
 			slog.Info("Shutting down metrics server")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			server.Shutdown(shutdownCtx)
+			if err := server.Shutdown(shutdownCtx); err != nil {
+				slog.Error("Failed to shutdown metrics server", slog.Any("error", err))
+			}
 		}()
 	}
 

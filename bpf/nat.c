@@ -329,10 +329,9 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     if (is_ingress) {
         struct nat_entry *entry = bpf_map_lookup_elem(&reverse_nat_map, &key);
         if (entry) {
+            entry->last_seen = bpf_ktime_get_ns();
             if (is_tcp_fin_rst) {
                 entry->state = NAT_STATE_CLOSING;
-            } else {
-                entry->last_seen = bpf_ktime_get_ns();
             }
             update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
             
@@ -371,10 +370,9 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     } else {
         struct nat_entry *entry = bpf_map_lookup_elem(&conntrack_map, &key);
         if (entry) {
+            entry->last_seen = bpf_ktime_get_ns();
             if (is_tcp_fin_rst) {
                 entry->state = NAT_STATE_CLOSING;
-            } else {
-                entry->last_seen = bpf_ktime_get_ns();
             }
             update_metrics(key.protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
 
@@ -501,7 +499,10 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             .translated_port = key.src_port,
             .last_seen = bpf_ktime_get_ns(),
         };
-        ret = bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_ANY);
+        // Use BPF_NOEXIST to atomically detect per-CPU port allocation races.
+        // If another CPU already inserted this reverse key (same port), fail fast
+        // and roll back the forward entry rather than silently overwriting it.
+        ret = bpf_map_update_elem(&reverse_nat_map, &reverse_key, &reverse_entry, BPF_NOEXIST);
         if (ret != 0) {
             bpf_map_delete_elem(&conntrack_map, &key);
             update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_MAP_UPDATE_FAIL, skb->len);

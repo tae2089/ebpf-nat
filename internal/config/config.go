@@ -70,6 +70,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max-sessions must be at least 8, got %d", c.MaxSessions)
 	}
 
+	if c.IPDetectType != "" {
+		switch c.IPDetectType {
+		case "generic", "aws", "gcp", "auto":
+			// valid
+		default:
+			return fmt.Errorf("invalid ip-detect-type: %s (must be generic, aws, gcp, or auto)", c.IPDetectType)
+		}
+	}
+
 	if c.Metrics.Enabled && (c.Metrics.Port < 1 || c.Metrics.Port > 65535) {
 		return fmt.Errorf("invalid metrics-port: %d (must be 1-65535)", c.Metrics.Port)
 	}
