@@ -10,12 +10,12 @@ import (
 func TestGCPDetector_GetPublicIP(t *testing.T) {
 	mux := http.NewServeMux()
 	
-	// Mock GCP IP endpoint
+	// Mock GCP IP endpoint — returns IP with trailing newline (common in HTTP responses)
 	mux.HandleFunc("/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Metadata-Flavor") != "Google" {
 			t.Error("missing or invalid Metadata-Flavor header")
 		}
-		w.Write([]byte("5.6.7.8"))
+		w.Write([]byte("5.6.7.8\n"))
 	})
 
 	server := httptest.NewServer(mux)

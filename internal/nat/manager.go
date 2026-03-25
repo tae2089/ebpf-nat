@@ -273,6 +273,8 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 }
 
 // SaveSessions iterates through ConntrackMap and ReverseNatMap and saves the sessions to a file.
+// This intentionally does not check isStopping because it is called as part of graceful shutdown
+// after Shutdown() has been invoked and all background tasks (GC, IP detection) have stopped.
 func (m *Manager) SaveSessions(path string) error {
 	// Ensure directory exists (no lock needed)
 	dir := filepath.Dir(path)

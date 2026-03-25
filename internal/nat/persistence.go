@@ -1,6 +1,7 @@
 package nat
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/tae2089/ebpf-nat/internal/bpf"
@@ -27,8 +28,12 @@ type SessionSnapshot struct {
 func getBootTimeUnixNano() int64 {
 	var ts unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		// Fallback to a very rough estimate if clock_gettime fails
-		return time.Now().UnixNano()
+		// CLOCK_MONOTONIC is always available on Linux; this path is effectively unreachable.
+		// Return 0 so that ktimeToUnix produces ktime values relative to the epoch,
+		// which will cause restored sessions to appear very old and be filtered out —
+		// a safe conservative fallback rather than silently restoring wrong sessions.
+		slog.Warn("ClockGettime(CLOCK_MONOTONIC) failed, session timestamps will be incorrect", slog.Any("error", err))
+		return 0
 	}
 	ktimeNow := ts.Nano()
 	now := time.Now().UnixNano()

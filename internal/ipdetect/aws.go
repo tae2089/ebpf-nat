@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -50,12 +51,13 @@ func (d *AWSDetector) getToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to get token: status %d", resp.StatusCode)
 	}
 
-	token, err := io.ReadAll(resp.Body)
+	token, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	if err != nil {
 		return "", err
 	}
 
-	return string(token), nil
+	// TrimSpace prevents CRLF injection when token is used as an HTTP header value
+	return strings.TrimSpace(string(token)), nil
 }
 
 func (d *AWSDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
@@ -81,14 +83,15 @@ func (d *AWSDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
 		return nil, fmt.Errorf("failed to get public IP from AWS: status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 	if err != nil {
 		return nil, err
 	}
 
-	ip := net.ParseIP(string(body))
+	ipStr := strings.TrimSpace(string(body))
+	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP format from AWS: %s", string(body))
+		return nil, fmt.Errorf("invalid IP format from AWS: %s", ipStr)
 	}
 
 	return ip, nil

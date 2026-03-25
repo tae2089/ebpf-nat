@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -50,14 +51,15 @@ func (d *GCPDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
 		return nil, fmt.Errorf("failed to get public IP from GCP: status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 	if err != nil {
 		return nil, err
 	}
 
-	ip := net.ParseIP(string(body))
+	ipStr := strings.TrimSpace(string(body))
+	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP format from GCP: %s", string(body))
+		return nil, fmt.Errorf("invalid IP format from GCP: %s", ipStr)
 	}
 
 	return ip, nil
