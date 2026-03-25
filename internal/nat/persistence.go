@@ -2,6 +2,7 @@ package nat
 
 import (
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/tae2089/ebpf-nat/internal/bpf"
@@ -41,7 +42,12 @@ func getBootTimeUnixNano() int64 {
 }
 
 // ktimeToUnix converts eBPF ktime (nanoseconds since boot) to Unix nanoseconds.
+// ktime values larger than math.MaxInt64 are clamped to prevent int64 overflow;
+// such values indicate a system uptime exceeding ~292 years, which is unreachable in practice.
 func ktimeToUnix(ktime uint64, bootTime int64) int64 {
+	if ktime > math.MaxInt64 {
+		return math.MaxInt64
+	}
 	return bootTime + int64(ktime)
 }
 

@@ -198,12 +198,18 @@ func TestGarbageCollector_BatchRun(t *testing.T) {
 		},
 	}
 
-	// Insert all sessions
+	// Insert all sessions.
+	// Reverse entries mirror the forward entry's LastSeen, matching BPF's behavior
+	// (reverse entries are created with last_seen = bpf_ktime_get_ns() in nat.c:502).
 	for _, s := range sessions {
 		if err := conntrackMap.Update(s.key, s.entry, 0); err != nil {
 			t.Fatalf("Failed to insert conntrack entry: %v", err)
 		}
-		revEntry := bpf.NatNatEntry{TranslatedIp: s.key.SrcIp, TranslatedPort: s.key.SrcPort}
+		revEntry := bpf.NatNatEntry{
+			TranslatedIp:   s.key.SrcIp,
+			TranslatedPort: s.key.SrcPort,
+			LastSeen:       s.entry.LastSeen,
+		}
 		if err := reverseNatMap.Update(s.revKey, revEntry, 0); err != nil {
 			t.Fatalf("Failed to insert reverse NAT entry: %v", err)
 		}
@@ -429,5 +435,68 @@ func TestGarbageCollector_ICMPReverseKey(t *testing.T) {
 	}
 	if err := reverseNatMap.Lookup(revKey, &entry); err == nil {
 		t.Error("Expired ICMP reverse entry was not deleted from reverse_nat_map")
+	}
+}
+
+// TestGarbageCollector_OrphanReverseCleanup verifies that reverse_nat_map entries
+// whose forward (conntrack) entry was evicted by LRU are cleaned up by GC when they expire.
+// Without orphan cleanup, these entries accumulate indefinitely.
+func TestGarbageCollector_OrphanReverseCleanup(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conntrackMap, err := ebpf.NewMap(spec.Maps["conntrack_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conntrackMap.Close()
+
+	reverseNatMap, err := ebpf.NewMap(spec.Maps["reverse_nat_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseNatMap.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap:  conntrackMap,
+			ReverseNatMap: reverseNatMap,
+		},
+	}
+
+	now := uint64(time.Now().UnixNano())
+	udpTimeout := 5 * time.Minute
+
+	// Simulate an orphaned reverse entry: forward entry (conntrack) was LRU-evicted,
+	// but the reverse entry remains in reverse_nat_map with an expired last_seen.
+	orphanRevKey := bpf.NatNatKey{
+		SrcIp: 0x08080808, DstIp: 0x0A000001,
+		SrcPort: 53, DstPort: 50001,
+		Protocol: syscall.IPPROTO_UDP,
+	}
+	orphanRevEntry := bpf.NatNatEntry{
+		TranslatedIp:   0xC0A8010A,
+		TranslatedPort: 12345,
+		LastSeen:       now - uint64(udpTimeout.Nanoseconds()) - 1000, // expired
+	}
+	reverseNatMap.Update(orphanRevKey, orphanRevEntry, 0)
+
+	// Note: no corresponding forward entry in conntrackMap — simulating LRU eviction
+
+	gc := NewGarbageCollector(objs, 24*time.Hour, udpTimeout)
+	if err := gc.RunOnce(context.Background(), now); err != nil {
+		t.Fatalf("RunOnce failed: %v", err)
+	}
+
+	// Orphaned reverse entry should be deleted since it's expired
+	var entry bpf.NatNatEntry
+	if err := reverseNatMap.Lookup(orphanRevKey, &entry); err == nil {
+		t.Error("Orphaned expired reverse entry was not deleted from reverse_nat_map")
 	}
 }
