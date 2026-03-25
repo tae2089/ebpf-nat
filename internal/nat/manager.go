@@ -184,13 +184,13 @@ func (m *Manager) SetSNATConfig(externalIP net.IP, maxMSS uint16) error {
 	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.setSNATConfigLocked(externalIP, maxMSS)
 }
 
 // setSNATConfigLocked updates SNAT config in the BPF map.
-// Caller must hold m.mu (read or write lock).
+// Caller must hold m.mu write lock.
 func (m *Manager) setSNATConfigLocked(externalIP net.IP, maxMSS uint16) error {
 	cfg := bpf.NatSnatConfig{
 		ExternalIp:   ipToUint32(externalIP),
@@ -494,6 +494,13 @@ func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, prot
 	if transIP == nil || transIP.To4() == nil {
 		return fmt.Errorf("invalid translation IP: %v", transIP)
 	}
+	// Non-nil IPs must be IPv4 — IPv6 would silently become 0.0.0.0 via ipToUint32
+	if srcIP != nil && srcIP.To4() == nil {
+		return fmt.Errorf("src IP must be IPv4: %v", srcIP)
+	}
+	if dstIP != nil && dstIP.To4() == nil {
+		return fmt.Errorf("dst IP must be IPv4: %v", dstIP)
+	}
 
 	// Ports are stored in host byte order to match BPF's bpf_ntohs() usage
 	key := bpf.NatNatKey{
@@ -518,6 +525,13 @@ func (m *Manager) AddDNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, prot
 	}
 	if transIP == nil || transIP.To4() == nil {
 		return fmt.Errorf("invalid translation IP: %v", transIP)
+	}
+	// Non-nil IPs must be IPv4 — IPv6 would silently become 0.0.0.0 via ipToUint32
+	if srcIP != nil && srcIP.To4() == nil {
+		return fmt.Errorf("src IP must be IPv4: %v", srcIP)
+	}
+	if dstIP != nil && dstIP.To4() == nil {
+		return fmt.Errorf("dst IP must be IPv4: %v", dstIP)
 	}
 
 	// Ports are stored in host byte order to match BPF's bpf_ntohs() usage

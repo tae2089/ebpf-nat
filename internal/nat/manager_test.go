@@ -58,8 +58,8 @@ func TestAddSNATRule(t *testing.T) {
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
 		DstIp:    ipToUint32(dstIP),
-		SrcPort:  htons(srcPort),
-		DstPort:  htons(dstPort),
+		SrcPort:  srcPort,
+		DstPort:  dstPort,
 		Protocol: protocol,
 	}
 
@@ -72,8 +72,8 @@ func TestAddSNATRule(t *testing.T) {
 		t.Errorf("Expected translated IP %v, got %v", ipToUint32(transIP), entry.TranslatedIp)
 	}
 
-	if entry.TranslatedPort != htons(transPort) {
-		t.Errorf("Expected translated port %v, got %v", htons(transPort), entry.TranslatedPort)
+	if entry.TranslatedPort != transPort {
+		t.Errorf("Expected translated port %v, got %v", transPort, entry.TranslatedPort)
 	}
 }
 
@@ -117,8 +117,8 @@ func TestAddDNATRule(t *testing.T) {
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
 		DstIp:    ipToUint32(dstIP),
-		SrcPort:  htons(srcPort),
-		DstPort:  htons(dstPort),
+		SrcPort:  srcPort,
+		DstPort:  dstPort,
 		Protocol: protocol,
 	}
 
@@ -129,6 +129,70 @@ func TestAddDNATRule(t *testing.T) {
 
 	if entry.TranslatedIp != ipToUint32(transIP) {
 		t.Errorf("Expected translated IP %v, got %v", ipToUint32(transIP), entry.TranslatedIp)
+	}
+}
+
+func TestAddSNATRule_IPv6Rejected(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := ebpf.NewMap(spec.Maps["conntrack_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	objs := &bpf.NatObjects{NatMaps: bpf.NatMaps{ConntrackMap: m}}
+	mgr := NewManager(objs)
+	transIP := net.ParseIP("10.0.0.1")
+
+	// IPv6 srcIP must be rejected (would silently become 0.0.0.0 without validation)
+	err = mgr.AddSNATRule(net.ParseIP("::1"), net.ParseIP("8.8.8.8"), 0, 80, syscall.IPPROTO_TCP, transIP, 8080)
+	if err == nil {
+		t.Error("Expected error for IPv6 srcIP, got nil")
+	}
+
+	// IPv6 dstIP must be rejected
+	err = mgr.AddSNATRule(net.ParseIP("192.168.1.1"), net.ParseIP("::1"), 0, 80, syscall.IPPROTO_TCP, transIP, 8080)
+	if err == nil {
+		t.Error("Expected error for IPv6 dstIP, got nil")
+	}
+
+	// nil IPs are allowed (wildcard 0.0.0.0)
+	err = mgr.AddSNATRule(nil, nil, 0, 80, syscall.IPPROTO_TCP, transIP, 8080)
+	if err != nil {
+		t.Errorf("Expected nil error for wildcard IPs, got %v", err)
+	}
+}
+
+func TestAddDNATRule_IPv6Rejected(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := ebpf.NewMap(spec.Maps["dnat_rules"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	objs := &bpf.NatObjects{NatMaps: bpf.NatMaps{DnatRules: m}}
+	mgr := NewManager(objs)
+	transIP := net.ParseIP("192.168.1.100")
+
+	// IPv6 dstIP must be rejected
+	err = mgr.AddDNATRule(nil, net.ParseIP("2001:db8::1"), 0, 80, syscall.IPPROTO_TCP, transIP, 8080)
+	if err == nil {
+		t.Error("Expected error for IPv6 dstIP, got nil")
 	}
 }
 
@@ -221,8 +285,8 @@ func TestMapFullLRU(t *testing.T) {
 	firstKey := bpf.NatNatKey{
 		SrcIp:    ipToUint32(net.ParseIP("192.168.1.10")),
 		DstIp:    ipToUint32(net.ParseIP("8.8.8.8")),
-		SrcPort:  htons(10001),
-		DstPort:  htons(53),
+		SrcPort:  10001,
+		DstPort:  53,
 		Protocol: uint8(syscall.IPPROTO_UDP),
 	}
 	if err := m.Lookup(firstKey, &value); err == nil {
@@ -275,8 +339,8 @@ func TestMapConflict(t *testing.T) {
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
 		DstIp:    ipToUint32(dstIP),
-		SrcPort:  htons(srcPort),
-		DstPort:  htons(dstPort),
+		SrcPort:  srcPort,
+		DstPort:  dstPort,
 		Protocol: protocol,
 	}
 	var value bpf.NatNatEntry

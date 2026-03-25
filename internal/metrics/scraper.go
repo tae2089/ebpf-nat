@@ -95,6 +95,15 @@ func (s *Scraper) collectRestorationFailures(ch chan<- prometheus.Metric) {
 	}
 }
 
+// BPF action constants matching nat.h definitions
+const (
+	actionTranslated    = 0
+	actionDropped       = 1
+	actionPassed        = 2
+	actionAllocFail     = 3
+	actionMapUpdateFail = 4
+)
+
 func (s *Scraper) collectFromMetricsMap(ch chan<- prometheus.Metric) {
 	if s.objects.MetricsMap == nil {
 		return
@@ -104,6 +113,9 @@ func (s *Scraper) collectFromMetricsMap(ch chan<- prometheus.Metric) {
 	var values []bpf.NatMetricsValue
 	iter := s.objects.MetricsMap.Iterate()
 
+	// Buffer metrics first; only send to channel if iteration completes without error.
+	// Sending partial metrics on iteration failure would produce misleading counters.
+	var buffered []prometheus.Metric
 	for iter.Next(&key, &values) {
 		var totalPackets uint64
 		var totalBytes uint64
@@ -116,18 +128,24 @@ func (s *Scraper) collectFromMetricsMap(ch chan<- prometheus.Metric) {
 		dir := dirToString(key.Direction)
 		act := actionToString(key.Action)
 
-		if key.Action == 3 { // ACTION_ALLOC_FAIL
-			ch <- prometheus.MustNewConstMetric(s.allocFailures, prometheus.CounterValue, float64(totalPackets), proto)
-		} else if key.Action == 4 { // ACTION_MAP_UPDATE_FAIL
-			ch <- prometheus.MustNewConstMetric(s.mapUpdateFailures, prometheus.CounterValue, float64(totalPackets), proto)
-		} else {
-			ch <- prometheus.MustNewConstMetric(s.packetsTotal, prometheus.CounterValue, float64(totalPackets), proto, dir, act)
-			ch <- prometheus.MustNewConstMetric(s.bytesTotal, prometheus.CounterValue, float64(totalBytes), proto, dir, act)
+		switch key.Action {
+		case actionAllocFail:
+			buffered = append(buffered, prometheus.MustNewConstMetric(s.allocFailures, prometheus.CounterValue, float64(totalPackets), proto))
+		case actionMapUpdateFail:
+			buffered = append(buffered, prometheus.MustNewConstMetric(s.mapUpdateFailures, prometheus.CounterValue, float64(totalPackets), proto))
+		default:
+			buffered = append(buffered, prometheus.MustNewConstMetric(s.packetsTotal, prometheus.CounterValue, float64(totalPackets), proto, dir, act))
+			buffered = append(buffered, prometheus.MustNewConstMetric(s.bytesTotal, prometheus.CounterValue, float64(totalBytes), proto, dir, act))
 		}
 	}
 
 	if err := iter.Err(); err != nil {
-		slog.Error("Failed to iterate metrics map", slog.Any("error", err))
+		slog.Error("Failed to iterate metrics map, skipping partial results", slog.Any("error", err))
+		return
+	}
+
+	for _, m := range buffered {
+		ch <- m
 	}
 }
 
@@ -179,15 +197,15 @@ func dirToString(d uint8) string {
 
 func actionToString(a uint8) string {
 	switch a {
-	case 0:
+	case actionTranslated:
 		return "translated"
-	case 1:
+	case actionDropped:
 		return "dropped"
-	case 2:
+	case actionPassed:
 		return "passed"
-	case 3: // ACTION_ALLOC_FAIL
+	case actionAllocFail:
 		return "alloc_fail"
-	case 4: // ACTION_MAP_UPDATE_FAIL
+	case actionMapUpdateFail:
 		return "map_update_fail"
 	default:
 		return "unknown"
