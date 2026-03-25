@@ -3,7 +3,9 @@ package nat
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -11,21 +13,39 @@ import (
 	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
+// sessionLimitWarningsTotal는 per-source 세션 수 경고 카운터다.
+// prometheus 대신 atomic 카운터를 사용하여 의존성 최소화.
+var sessionLimitWarningsTotal sessionLimitCounter
+
+type sessionLimitCounter struct {
+	count uint64
+}
+
+func (c *sessionLimitCounter) Inc() {
+	atomic.AddUint64(&c.count, 1)
+}
+
+func (c *sessionLimitCounter) Load() uint64 {
+	return atomic.LoadUint64(&c.count)
+}
+
 const defaultBatchSize = 256
 
 type GarbageCollector struct {
-	objects           *bpf.NatObjects
-	tcpTimeout        time.Duration
-	tcpClosingTimeout time.Duration
-	udpTimeout        time.Duration
+	objects              *bpf.NatObjects
+	tcpTimeout           time.Duration
+	tcpClosingTimeout    time.Duration
+	udpTimeout           time.Duration
+	maxSessionsPerSource uint32 // 0 = 비활성 (per-source 세션 수 경고 임계값)
 }
 
 func NewGarbageCollector(objs *bpf.NatObjects, tcpTimeout, udpTimeout time.Duration) *GarbageCollector {
 	return &GarbageCollector{
-		objects:           objs,
-		tcpTimeout:        tcpTimeout,
-		tcpClosingTimeout: 2 * time.Minute,
-		udpTimeout:        udpTimeout,
+		objects:              objs,
+		tcpTimeout:           tcpTimeout,
+		tcpClosingTimeout:    2 * time.Minute,
+		udpTimeout:           udpTimeout,
+		maxSessionsPerSource: 0, // 기본: 비활성
 	}
 }
 
@@ -33,9 +53,23 @@ func (gc *GarbageCollector) RunOnce(ctx context.Context, now uint64) error {
 	slog.Debug("Starting NAT map garbage collection")
 
 	// Phase 1: Collect expired forward (conntrack) entries and their paired reverse keys.
-	expiredForwardKeys, pairedRevKeys, err := gc.collectExpiredKeys(ctx, now)
+	// Also collect per-source session counts if monitoring is enabled.
+	expiredForwardKeys, pairedRevKeys, sourceCount, err := gc.collectExpiredKeys(ctx, now)
 	if err != nil {
 		return err
+	}
+
+	// Phase 1b: Per-source 세션 수 초과 경고
+	if gc.maxSessionsPerSource > 0 {
+		for srcIP, count := range sourceCount {
+			if uint32(count) > gc.maxSessionsPerSource {
+				slog.Warn("Source IP exceeds session limit",
+					slog.String("src_ip", uint32ToIPStr(srcIP)),
+					slog.Int("session_count", count),
+					slog.Uint64("max_sessions_per_source", uint64(gc.maxSessionsPerSource)))
+				sessionLimitWarningsTotal.Inc()
+			}
+		}
 	}
 
 	// Phase 2: Collect expired reverse entries independently.
@@ -65,9 +99,21 @@ func (gc *GarbageCollector) RunOnce(ctx context.Context, now uint64) error {
 	return nil
 }
 
-func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) ([]bpf.NatNatKey, []bpf.NatNatKey, error) {
+// uint32ToIPStr는 uint32 IP를 점 표기법 문자열로 변환한다 (BigEndian 기준).
+func uint32ToIPStr(ip uint32) string {
+	return fmt.Sprintf("%d.%d.%d.%d",
+		byte(ip>>24), byte(ip>>16), byte(ip>>8), byte(ip))
+}
+
+func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) ([]bpf.NatNatKey, []bpf.NatNatKey, map[uint32]int, error) {
 	var expiredKeys []bpf.NatNatKey
 	var expiredRevKeys []bpf.NatNatKey
+
+	// per-source 세션 카운터 (maxSessionsPerSource가 0이면 수집하지 않음)
+	var sourceCount map[uint32]int
+	if gc.maxSessionsPerSource > 0 {
+		sourceCount = make(map[uint32]int)
+	}
 
 	var cursor ebpf.MapBatchCursor
 	keys := make([]bpf.NatNatKey, defaultBatchSize)
@@ -76,15 +122,20 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, nil, nil, ctx.Err()
 		default:
 		}
 
 		count, err := gc.objects.ConntrackMap.BatchLookup(&cursor, keys, values, nil)
 
-		for i := 0; i < count; i++ {
+		for i := range count {
 			key := keys[i]
 			entry := values[i]
+
+			// per-source 카운터 수집
+			if sourceCount != nil {
+				sourceCount[key.SrcIp]++
+			}
 
 			var timeout time.Duration
 			if entry.State == NatStateClosing {
@@ -135,11 +186,11 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 			break
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 
-	return expiredKeys, expiredRevKeys, nil
+	return expiredKeys, expiredRevKeys, sourceCount, nil
 }
 
 // collectExpiredReverseKeys scans the reverse_nat_map independently and returns
@@ -161,7 +212,7 @@ func (gc *GarbageCollector) collectExpiredReverseKeys(ctx context.Context, now u
 
 		count, err := gc.objects.ReverseNatMap.BatchLookup(&cursor, keys, values, nil)
 
-		for i := 0; i < count; i++ {
+		for i := range count {
 			key := keys[i]
 			entry := values[i]
 

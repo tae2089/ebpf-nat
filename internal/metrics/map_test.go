@@ -1,9 +1,9 @@
 //go:build linux
-// +build linux
 
 package metrics
 
 import (
+	"encoding/binary"
 	"net"
 	"testing"
 
@@ -96,10 +96,6 @@ func ipToUint32(ip net.IP) uint32 {
 	if ip == nil {
 		return 0
 	}
-	return binaryLittleEndianUint32(ip)
-}
-
-func binaryLittleEndianUint32(b []byte) uint32 {
-	_ = b[3] // bounds check hint to compiler; see golang.org/issue/14808
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
+	// BPF 맵은 호스트 바이트 순서(NativeEndian)로 IP 주소를 저장한다.
+	return binary.NativeEndian.Uint32(ip)
 }

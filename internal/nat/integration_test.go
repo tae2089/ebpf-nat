@@ -1,10 +1,8 @@
 //go:build linux
-// +build linux
 
 package nat
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -63,9 +61,7 @@ func TestNATConnectivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go bpf.StartTracePipeLogger(ctx)
+	go bpf.StartTracePipeLogger(t.Context())
 
 	objs := bpf.NatObjects{}
 	if err := bpf.LoadNatObjects(&objs, nil); err != nil {
@@ -428,7 +424,7 @@ func TestNATConnectivity(t *testing.T) {
 		if err := objs.SnatConfigMap.Update(uint32(0), bpf.NatSnatConfig{
 			ExternalIp:   ipToUint32(externalIP),
 			InternalNet:  ipToUint32(ipnet.IP),
-			InternalMask: binary.LittleEndian.Uint32(ipnet.Mask),
+			InternalMask: binary.NativeEndian.Uint32(ipnet.Mask),
 		}, 0); err != nil {
 			t.Fatal(err)
 		}
