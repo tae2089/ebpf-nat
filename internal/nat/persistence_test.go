@@ -1,8 +1,17 @@
+//go:build linux
+// +build linux
+
 package nat
 
 import (
+	"compress/gzip"
+	"encoding/gob"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tae2089/ebpf-nat/internal/bpf"
 )
 
 func TestTimeConversion(t *testing.T) {
@@ -53,5 +62,31 @@ func TestUnixToKtime(t *testing.T) {
 	result = unixToKtime(unixNano, bootTime)
 	if result != 0 {
 		t.Errorf("expected 0 for time before boot, got %d", result)
+	}
+}
+
+func TestRestoreSessions_UnsupportedVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.gob")
+
+	// Write a snapshot with an unsupported version
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := gzip.NewWriter(f)
+	if err := gob.NewEncoder(gw).Encode(SessionSnapshot{Version: 99, CreatedAt: time.Now()}); err != nil {
+		gw.Close()
+		f.Close()
+		t.Fatal(err)
+	}
+	gw.Close()
+	f.Close()
+
+	objs := &bpf.NatObjects{}
+	mgr := NewManager(objs)
+	err = mgr.RestoreSessions(path)
+	if err == nil {
+		t.Error("expected error for unsupported snapshot version, got nil")
 	}
 }

@@ -396,6 +396,10 @@ func (m *Manager) RestoreSessions(path string) error {
 		return fmt.Errorf("failed to decode session snapshot: %w", err)
 	}
 
+	if snapshot.Version != 1 {
+		return fmt.Errorf("unsupported session snapshot version %d (expected 1)", snapshot.Version)
+	}
+
 	// Filter and prepare batch updates
 	var conntrackKeys []bpf.NatNatKey
 	var conntrackValues []bpf.NatNatEntry
