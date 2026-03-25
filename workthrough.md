@@ -83,3 +83,24 @@
       - **Bug: AddSNATRule/AddDNATRule IPv6 입력 시 0.0.0.0 변환 방지** — `net.IP.To4()`가 nil을 반환하는 IPv6 주소는 `ipToUint32()`에서 0.0.0.0(와일드카드)으로 변환됨. non-nil IPv6 입력 시 명시적 에러 반환 추가. nil은 의도적 와일드카드이므로 허용.
       - **Bug: collectFromMetricsMap 부분 메트릭 전송 방지** — 순회 중 에러 발생 시 이미 채널로 전송된 부분 메트릭이 Prometheus에 노출되어 실제보다 낮은 카운터 값이 보고되는 문제. 메트릭을 버퍼에 쌓은 후 완전 수집 확인 후에만 채널 전송.
       - **테스트 추가** — `TestAddSNATRule_IPv6Rejected`, `TestAddDNATRule_IPv6Rejected` 추가. 전체 테스트(nat 20건 포함) PASS.
+    - **코드 리뷰 기반 버그 수정 및 테스트 보완 (Iteration 3)**:
+      - **Bug: countMapEntries iter.Err() 미체크** — BPF 맵 반복 실패 시 부분 카운트가 Prometheus에 노출되어 실제보다 낮은 active_sessions 값이 보고됨. `iter.Err()` 체크 추가; 에러 발생 시 경고 로그 후 0 반환하여 오해의 소지 제거.
+      - **Bug: RestoreSessions 스냅샷 버전 미검증** — 버전 필드를 저장하지만 복원 시 검증하지 않아, 다른 버전의 파일을 잘못 로드할 수 있었음. `snapshot.Version != 1` 시 에러 반환 추가.
+      - **테스트 추가** — `TestRestoreSessions_UnsupportedVersion` 추가. 전체 테스트(nat, metrics, config) PASS.
+    - **코드 리뷰 기반 버그 수정 (Iteration 4)**:
+      - **Bug: AWS IMDSv2 토큰/IP 응답에 TrimSpace 누락** — `getToken()`이 토큰 문자열을 그대로 HTTP 헤더 값(`X-aws-ec2-metadata-token`)으로 사용. AWS IMDS 응답의 trailing newline이 헤더에 포함되면 CRLF 인젝션 가능. `strings.TrimSpace()` 적용. IP 응답도 동일하게 처리하여 `net.ParseIP()` 실패 방지.
+      - **Bug: GCP IP 응답에 TrimSpace 누락** — `generic.go`는 TrimSpace를 적용하는데 `gcp.go`는 누락. 동일하게 적용하여 trailing newline으로 인한 `net.ParseIP()` 실패 방지.
+      - **Bug: getBootTimeUnixNano 에러 fallback 오류** — 에러 시 `time.Now().UnixNano()`를 boot time으로 반환하면, `ktimeToUnix(ktime, bootTime) = now + ktime`이 되어 모든 세션이 먼 미래 타임스탬프로 변환됨. 결과적으로 만료 판단 실패로 모든 세션이 복원되는 문제. `0` 반환 및 경고 로그 추가로 수정.
+      - **개선: SaveSessions isStopping 주석 추가** — `SaveSessions`는 의도적으로 `isStopping` 체크를 하지 않음 (graceful shutdown 시 `Shutdown()` 호출 후 저장 필요). 의도를 명확히 하는 주석 추가.
+      - **테스트 보완** — `aws_test.go`, `gcp_test.go`에 trailing newline 응답 테스트 추가. 전체 테스트(ipdetect 4건, nat 21건 포함) PASS.
+    - **코드 리뷰 기반 버그 수정 (Iteration 5, Ralph Loop 최종)**:
+      - **Bug: GC orphan reverse_nat_map 미정리** — conntrack_map이 LRU eviction으로 forward 엔트리를 제거해도 reverse_nat_map의 대응 엔트리가 GC 스캔 대상에서 제외됨. 시간이 지나면 reverse 맵이 orphan으로 가득 차 새 세션 할당이 불가할 수 있음. `collectExpiredReverseKeys`를 추가하여 reverse_nat_map을 독립적으로 스캔하고 만료 엔트리를 정리. `mergeUniqueKeys`로 두 경로에서 수집된 reverse key를 중복 없이 병합.
+      - **Bug: TestGarbageCollector_BatchRun reverse 엔트리 LastSeen 누락** — 테스트에서 reverse 엔트리를 `LastSeen=0`으로 생성하면, 새 orphan 스캔이 이를 만료로 오판하여 active 세션 삭제. BPF의 동작(nat.c:502 `last_seen = bpf_ktime_get_ns()`)에 맞게 테스트 수정.
+      - **Minor: ktimeToUnix int64 오버플로 가드 추가** — `ktime > math.MaxInt64`인 경우 `int64(ktime)` 변환 시 오버플로 가능. `math.MaxInt64` 상한 클램핑으로 방어.
+      - **테스트 추가** — `TestGarbageCollector_OrphanReverseCleanup`: forward 엔트리 없이 만료된 reverse 엔트리가 정리되는지 검증. 전체 테스트 PASS.
+    - **코드 리뷰 기반 버그 수정 (Iteration 6, Ralph Loop 계속)**:
+      - **Bug: FIN/RST 패킷 처리 시 last_seen 미갱신** — 인그레스(reverse_nat_map)와 이그레스(conntrack_map) 경로 모두에서, FIN/RST 패킷 처리 시 `state = NAT_STATE_CLOSING`만 설정하고 `last_seen`을 갱신하지 않음. GC가 마지막 데이터 패킷 시점부터 closing timeout을 측정하여 조기 세션 만료 가능. `last_seen = bpf_ktime_get_ns()`를 항상 갱신하도록 수정(FIN/RST여부와 무관하게).
+      - **Bug: 포트 할당 per-CPU 레이스 컨디션** — 여러 CPU가 동시에 같은 포트를 사용 가능으로 감지하고 `conntrack_map`에 각자 삽입 후, `reverse_nat_map`에 `BPF_ANY`로 마지막 삽입이 이전 것을 덮어씀. 패킷 미라우팅 발생. `BPF_NOEXIST`로 교체하여 원자적으로 충돌 감지; 충돌 시 forward 엔트리 롤백 후 패킷 드롭(클라이언트가 SYN 재전송).
+      - **검증 강화: IPDetectType 유효값 검증** — `Config.Validate()`에서 `IPDetectType`을 검증하지 않아 오타 시 조용히 잘못 동작. `generic`, `aws`, `gcp`, `auto`, `""`만 허용하도록 추가.
+      - **main.go: server.Shutdown 에러 미로깅 수정** — 메트릭 서버 종료 에러를 무시하고 있었음. `slog.Error`로 로깅 추가.
+      - **테스트 추가** — `IPDetectType` 유효/무효 값 6건 추가. 전체 테스트(config 26건, nat 22건 등) PASS. BPF 재빌드 및 Docker 통합 테스트 전체 통과.
