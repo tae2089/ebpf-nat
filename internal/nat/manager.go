@@ -7,6 +7,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -64,18 +65,21 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 		return ErrManagerStopping
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	// Parse timeouts
 	m.tcpTimeout = 24 * time.Hour
 	if cfg.TCPTimeout != "" {
 		if d, err := time.ParseDuration(cfg.TCPTimeout); err == nil {
 			m.tcpTimeout = d
+		} else {
+			slog.Warn("Failed to parse tcp-timeout, using default 24h", slog.String("value", cfg.TCPTimeout), slog.Any("error", err))
 		}
 	}
 	m.udpTimeout = 5 * time.Minute
 	if cfg.UDPTimeout != "" {
 		if d, err := time.ParseDuration(cfg.UDPTimeout); err == nil {
 			m.udpTimeout = d
+		} else {
+			slog.Warn("Failed to parse udp-timeout, using default 5m", slog.String("value", cfg.UDPTimeout), slog.Any("error", err))
 		}
 	}
 	m.maxMSS = cfg.MaxMSS
@@ -91,7 +95,7 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 			slog.Warn("Failed to parse internal_net CIDR", slog.String("value", cfg.InternalNet), slog.Any("error", err))
 		} else {
 			m.internalNet = ipToUint32(ipnet.IP)
-			m.internalMask = binary.LittleEndian.Uint32(ipnet.Mask)
+			m.internalMask = binary.NativeEndian.Uint32(ipnet.Mask)
 		}
 	}
 
@@ -113,7 +117,9 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 
 	if cfg.Masquerade {
 		if cfg.ExternalIP != "" {
-			if err := m.SetSNATConfig(net.ParseIP(cfg.ExternalIP), cfg.MaxMSS); err != nil {
+			// Use internal method to avoid deadlock (we already hold the write lock)
+			if err := m.setSNATConfigLocked(net.ParseIP(cfg.ExternalIP), cfg.MaxMSS); err != nil {
+				m.mu.Unlock()
 				return err
 			}
 		} else {
@@ -132,15 +138,23 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 				m.ipDetector = ipdetect.NewDefaultAutoDetector()
 			}
 
-			// Initial detection
+			// Release lock before calling updatePublicIP (which acquires its own lock)
+			maxMSS := m.maxMSS
+			privateIP := m.privateIP
+			m.mu.Unlock()
+
 			if err := m.updatePublicIP(context.Background()); err != nil {
 				slog.Error("Initial public IP detection failed, using private IP", slog.Any("error", err))
-				if m.privateIP != nil {
-					m.SetSNATConfig(m.privateIP, cfg.MaxMSS)
+				if privateIP != nil {
+					m.SetSNATConfig(privateIP, maxMSS)
 				}
 			}
+
+			// Re-acquire for the rest of LoadConfig
+			m.mu.Lock()
 		}
 	}
+	m.mu.Unlock()
 
 	for _, rule := range cfg.SNAT {
 		proto := parseProtocol(rule.Protocol)
@@ -171,14 +185,17 @@ func (m *Manager) SetSNATConfig(externalIP net.IP, maxMSS uint16) error {
 		return ErrManagerStopping
 	}
 	m.mu.RLock()
-	internalNet := m.internalNet
-	internalMask := m.internalMask
-	m.mu.RUnlock()
+	defer m.mu.RUnlock()
+	return m.setSNATConfigLocked(externalIP, maxMSS)
+}
 
+// setSNATConfigLocked updates SNAT config in the BPF map.
+// Caller must hold m.mu (read or write lock).
+func (m *Manager) setSNATConfigLocked(externalIP net.IP, maxMSS uint16) error {
 	cfg := bpf.NatSnatConfig{
 		ExternalIp:   ipToUint32(externalIP),
-		InternalNet:  internalNet,
-		InternalMask: internalMask,
+		InternalNet:  m.internalNet,
+		InternalMask: m.internalMask,
 		MaxMss:       maxMSS,
 	}
 	slog.Info("Updating SNAT configuration",
@@ -208,7 +225,8 @@ func (m *Manager) updatePublicIP(ctx context.Context) error {
 }
 
 // RunBackgroundTasks starts periodic tasks like IP detection and garbage collection.
-func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcInterval, tcpTimeout, udpTimeout time.Duration) {
+// Timeout values are read from the Manager's internal fields set by LoadConfig.
+func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcInterval time.Duration) {
 	var ipTicker *time.Ticker
 	var ipTickerC <-chan time.Time
 
@@ -223,6 +241,10 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 	gcTicker := time.NewTicker(gcInterval)
 	defer gcTicker.Stop()
 
+	m.mu.RLock()
+	tcpTimeout := m.tcpTimeout
+	udpTimeout := m.udpTimeout
+	m.mu.RUnlock()
 	gc := NewGarbageCollector(m.objects, tcpTimeout, udpTimeout)
 
 	for {
@@ -252,16 +274,13 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 
 // SaveSessions iterates through ConntrackMap and ReverseNatMap and saves the sessions to a file.
 func (m *Manager) SaveSessions(path string) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// Ensure directory exists
+	// Ensure directory exists (no lock needed)
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create session directory: %w", err)
 	}
 
-	// We allow SaveSessions during shutdown
+	// Phase 1: Snapshot map entries under lock (minimize lock duration)
 	bootTime := getBootTimeUnixNano()
 	snapshot := SessionSnapshot{
 		Version:   1,
@@ -269,7 +288,7 @@ func (m *Manager) SaveSessions(path string) error {
 		Entries:   []PersistentEntry{},
 	}
 
-	// Iterate ConntrackMap
+	m.mu.RLock()
 	var key bpf.NatNatKey
 	var entry bpf.NatNatEntry
 	iter := m.objects.ConntrackMap.Iterate()
@@ -282,10 +301,10 @@ func (m *Manager) SaveSessions(path string) error {
 		})
 	}
 	if err := iter.Err(); err != nil {
+		m.mu.RUnlock()
 		return fmt.Errorf("error iterating conntrack_map: %w", err)
 	}
 
-	// Iterate ReverseNatMap
 	iter = m.objects.ReverseNatMap.Iterate()
 	for iter.Next(&key, &entry) {
 		snapshot.Entries = append(snapshot.Entries, PersistentEntry{
@@ -295,19 +314,21 @@ func (m *Manager) SaveSessions(path string) error {
 			LastSeenUnix: ktimeToUnix(entry.LastSeen, bootTime),
 		})
 	}
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("error iterating reverse_nat_map: %w", err)
+	iterErr := iter.Err()
+	m.mu.RUnlock()
+
+	if iterErr != nil {
+		return fmt.Errorf("error iterating reverse_nat_map: %w", iterErr)
 	}
 
-	// Create a temporary file for atomic write
+	// Phase 2: Write to file without lock (I/O bound, should not block other operations)
 	tmpFile := path + ".tmp"
-	f, err := os.Create(tmpFile)
+	f, err := os.OpenFile(tmpFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
 	}
 	defer os.Remove(tmpFile) // Remove if we fail
 
-	// Serialize using gob with gzip compression
 	gw := gzip.NewWriter(f)
 	encoder := gob.NewEncoder(gw)
 	if err := encoder.Encode(snapshot); err != nil {
@@ -320,14 +341,12 @@ func (m *Manager) SaveSessions(path string) error {
 		return fmt.Errorf("failed to close gzip writer: %w", err)
 	}
 
-	// Ensure all data is written to disk
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("failed to sync temporary file: %w", err)
 	}
 	f.Close()
 
-	// Atomically rename
 	if err := os.Rename(tmpFile, path); err != nil {
 		return fmt.Errorf("failed to rename session file: %w", err)
 	}
@@ -341,6 +360,13 @@ func (m *Manager) RestoreSessions(path string) error {
 	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
+
+	// Read timeout and batch size values under lock to avoid data race
+	m.mu.RLock()
+	tcpTimeout := m.tcpTimeout
+	udpTimeout := m.udpTimeout
+	batchSize := m.batchUpdateSize
+	m.mu.RUnlock()
 
 	bootTime := getBootTimeUnixNano()
 	nowUnix := time.Now().UnixNano()
@@ -358,12 +384,14 @@ func (m *Manager) RestoreSessions(path string) error {
 	var snapshot SessionSnapshot
 	gr, err := gzip.NewReader(f)
 	if err != nil {
-		f.Close()
 		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer gr.Close()
 
-	decoder := gob.NewDecoder(gr)
+	// Limit decompressed size to 256MB to prevent decompression bombs
+	const maxDecompressedSize = 256 * 1024 * 1024
+	limitedReader := io.LimitReader(gr, maxDecompressedSize)
+	decoder := gob.NewDecoder(limitedReader)
 	if err := decoder.Decode(&snapshot); err != nil {
 		return fmt.Errorf("failed to decode session snapshot: %w", err)
 	}
@@ -383,11 +411,11 @@ func (m *Manager) RestoreSessions(path string) error {
 		var timeout time.Duration
 		switch entry.Key.Protocol {
 		case syscall.IPPROTO_TCP:
-			timeout = m.tcpTimeout
+			timeout = tcpTimeout
 		case syscall.IPPROTO_UDP:
-			timeout = m.udpTimeout
+			timeout = udpTimeout
 		default:
-			timeout = m.udpTimeout
+			timeout = udpTimeout
 		}
 
 		if age > int64(timeout.Nanoseconds()) {
@@ -404,7 +432,7 @@ func (m *Manager) RestoreSessions(path string) error {
 	}
 
 	// Load sessions into eBPF maps using chunked batch updates
-	batchUpdateSize := int(m.batchUpdateSize)
+	batchUpdateSize := int(batchSize)
 	if batchUpdateSize <= 0 {
 		batchUpdateSize = 1000
 	}
@@ -463,18 +491,22 @@ func (m *Manager) AddSNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, prot
 	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
+	if transIP == nil || transIP.To4() == nil {
+		return fmt.Errorf("invalid translation IP: %v", transIP)
+	}
 
+	// Ports are stored in host byte order to match BPF's bpf_ntohs() usage
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
 		DstIp:    ipToUint32(dstIP),
-		SrcPort:  htons(srcPort),
-		DstPort:  htons(dstPort),
+		SrcPort:  srcPort,
+		DstPort:  dstPort,
 		Protocol: protocol,
 	}
 
 	entry := bpf.NatNatEntry{
 		TranslatedIp:   ipToUint32(transIP),
-		TranslatedPort: htons(transPort),
+		TranslatedPort: transPort,
 	}
 
 	return m.objects.ConntrackMap.Update(key, entry, 0)
@@ -484,18 +516,22 @@ func (m *Manager) AddDNATRule(srcIP, dstIP net.IP, srcPort, dstPort uint16, prot
 	if m.isStopping.Load() {
 		return ErrManagerStopping
 	}
+	if transIP == nil || transIP.To4() == nil {
+		return fmt.Errorf("invalid translation IP: %v", transIP)
+	}
 
+	// Ports are stored in host byte order to match BPF's bpf_ntohs() usage
 	key := bpf.NatNatKey{
 		SrcIp:    ipToUint32(srcIP),
 		DstIp:    ipToUint32(dstIP),
-		SrcPort:  htons(srcPort),
-		DstPort:  htons(dstPort),
+		SrcPort:  srcPort,
+		DstPort:  dstPort,
 		Protocol: protocol,
 	}
 
 	entry := bpf.NatNatEntry{
 		TranslatedIp:   ipToUint32(transIP),
-		TranslatedPort: htons(transPort),
+		TranslatedPort: transPort,
 	}
 
 	return m.objects.DnatRules.Update(key, entry, 0)
@@ -517,13 +553,7 @@ func ipToUint32(ip net.IP) uint32 {
 	if ip == nil {
 		return 0
 	}
-	return binary.LittleEndian.Uint32(ip)
-}
-
-func htons(i uint16) uint16 {
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, i)
-	return binary.LittleEndian.Uint16(b)
+	return binary.NativeEndian.Uint32(ip)
 }
 
 func (m *Manager) GetRestorationFailures() uint64 {

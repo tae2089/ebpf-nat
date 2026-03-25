@@ -85,6 +85,11 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 				}
 			}
 
+			// Guard against uint64 underflow: clock skew or stale timestamps
+			// could cause entry.LastSeen > now, yielding a huge age value.
+			if entry.LastSeen > now {
+				continue
+			}
 			age := now - entry.LastSeen
 			if age > uint64(timeout.Nanoseconds()) {
 				slog.Debug("Marking expired session for eviction",
@@ -92,13 +97,21 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 					slog.Duration("age", time.Duration(age)))
 
 				expiredKeys = append(expiredKeys, key)
-				expiredRevKeys = append(expiredRevKeys, bpf.NatNatKey{
+				// Construct reverse key matching BPF's reverse_key construction
+				revKey := bpf.NatNatKey{
 					SrcIp:    key.DstIp,
 					DstIp:    entry.TranslatedIp,
-					SrcPort:  key.DstPort,
-					DstPort:  entry.TranslatedPort,
 					Protocol: key.Protocol,
-				})
+				}
+				if key.Protocol == syscall.IPPROTO_ICMP {
+					// ICMP reverse keys use allocated_port for both src and dst
+					revKey.SrcPort = entry.TranslatedPort
+					revKey.DstPort = entry.TranslatedPort
+				} else {
+					revKey.SrcPort = key.DstPort
+					revKey.DstPort = entry.TranslatedPort
+				}
+				expiredRevKeys = append(expiredRevKeys, revKey)
 			}
 		}
 

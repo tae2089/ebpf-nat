@@ -298,3 +298,136 @@ func TestGarbageCollector_StateAwareTimeout(t *testing.T) {
 		t.Errorf("Closing session (5m old) should have been evicted")
 	}
 }
+
+func TestGarbageCollector_ClockSkewProtection(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conntrackMap, err := ebpf.NewMap(spec.Maps["conntrack_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conntrackMap.Close()
+
+	reverseNatMap, err := ebpf.NewMap(spec.Maps["reverse_nat_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseNatMap.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap:  conntrackMap,
+			ReverseNatMap: reverseNatMap,
+		},
+	}
+
+	// Simulate clock skew: now is small, but LastSeen is in the "future"
+	now := uint64(1000) // very small "now"
+	tcpTimeout := 24 * time.Hour
+	udpTimeout := 5 * time.Minute
+
+	// Entry with LastSeen > now (future timestamp — clock skew scenario)
+	// Without the underflow guard, now - entry.LastSeen wraps to a huge value
+	// and the session would be wrongly evicted.
+	futureKey := bpf.NatNatKey{SrcIp: 1, DstIp: 2, SrcPort: 10, DstPort: 20, Protocol: syscall.IPPROTO_TCP}
+	futureEntry := bpf.NatNatEntry{TranslatedIp: 3, TranslatedPort: 30, LastSeen: now + 1_000_000_000} // 1 second in the future
+	conntrackMap.Update(futureKey, futureEntry, 0)
+
+	gc := NewGarbageCollector(objs, tcpTimeout, udpTimeout)
+	if err := gc.RunOnce(context.Background(), now); err != nil {
+		t.Fatalf("RunOnce failed: %v", err)
+	}
+
+	// The session with a future timestamp should NOT be evicted
+	var entry bpf.NatNatEntry
+	if err := conntrackMap.Lookup(futureKey, &entry); err != nil {
+		t.Error("Session with future LastSeen (clock skew) was incorrectly evicted")
+	}
+}
+
+func TestGarbageCollector_ICMPReverseKey(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conntrackMap, err := ebpf.NewMap(spec.Maps["conntrack_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conntrackMap.Close()
+
+	reverseNatMap, err := ebpf.NewMap(spec.Maps["reverse_nat_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseNatMap.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap:  conntrackMap,
+			ReverseNatMap: reverseNatMap,
+		},
+	}
+
+	now := uint64(time.Now().UnixNano())
+	udpTimeout := 5 * time.Minute
+
+	// Expired ICMP session: echo_id=0x1234, allocated_port=40000
+	echoID := uint16(0x1234)
+	allocatedPort := uint16(40000)
+	srcIP := uint32(0xC0A8010A) // 192.168.1.10
+	dstIP := uint32(0x08080808) // 8.8.8.8
+	extIP := uint32(0x0A000001) // 10.0.0.1
+
+	// Forward entry: BPF stores ICMP keys with src_port=echo_id, dst_port=echo_id
+	fwdKey := bpf.NatNatKey{
+		SrcIp: srcIP, DstIp: dstIP,
+		SrcPort: echoID, DstPort: echoID,
+		Protocol: syscall.IPPROTO_ICMP,
+	}
+	fwdEntry := bpf.NatNatEntry{
+		TranslatedIp:   extIP,
+		TranslatedPort: allocatedPort,
+		LastSeen:       now - uint64(udpTimeout.Nanoseconds()) - 1000,
+	}
+	conntrackMap.Update(fwdKey, fwdEntry, 0)
+
+	// Reverse entry: BPF stores ICMP reverse keys with src_port=allocated, dst_port=allocated
+	revKey := bpf.NatNatKey{
+		SrcIp: dstIP, DstIp: extIP,
+		SrcPort: allocatedPort, DstPort: allocatedPort,
+		Protocol: syscall.IPPROTO_ICMP,
+	}
+	revEntry := bpf.NatNatEntry{
+		TranslatedIp:   srcIP,
+		TranslatedPort: echoID,
+	}
+	reverseNatMap.Update(revKey, revEntry, 0)
+
+	// Run GC
+	gc := NewGarbageCollector(objs, 24*time.Hour, udpTimeout)
+	if err := gc.RunOnce(context.Background(), now); err != nil {
+		t.Fatalf("RunOnce failed: %v", err)
+	}
+
+	// Both forward and reverse entries should be deleted
+	var entry bpf.NatNatEntry
+	if err := conntrackMap.Lookup(fwdKey, &entry); err == nil {
+		t.Error("Expired ICMP forward entry was not deleted from conntrack_map")
+	}
+	if err := reverseNatMap.Lookup(revKey, &entry); err == nil {
+		t.Error("Expired ICMP reverse entry was not deleted from reverse_nat_map")
+	}
+}

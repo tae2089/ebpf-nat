@@ -78,6 +78,130 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "invalid metrics port zero",
+			config: Config{
+				Interface: "eth0",
+				Metrics: MetricsConfig{
+					Enabled: true,
+					Port:    0,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid metrics port too high",
+			config: Config{
+				Interface: "eth0",
+				Metrics: MetricsConfig{
+					Enabled: true,
+					Port:    70000,
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid metrics port",
+			config: Config{
+				Interface: "eth0",
+				Metrics: MetricsConfig{
+					Enabled: true,
+					Port:    9090,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "IPv6 external-ip rejected",
+			config: Config{
+				Interface:  "eth0",
+				ExternalIP: "::1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "DNAT rule missing trans-ip",
+			config: Config{
+				Interface: "eth0",
+				DNAT: []Rule{
+					{
+						DstIP:    "1.2.3.4",
+						DstPort:  80,
+						Protocol: "tcp",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid DNAT rule",
+			config: Config{
+				Interface: "eth0",
+				DNAT: []Rule{
+					{
+						DstIP:     "1.2.3.4",
+						DstPort:   80,
+						Protocol:  "tcp",
+						TransIP:   "192.168.1.100",
+						TransPort: 8080,
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "SNAT rule with IPv6 trans-ip rejected",
+			config: Config{
+				Interface: "eth0",
+				SNAT: []Rule{
+					{
+						Protocol: "tcp",
+						TransIP:  "::1",
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero gc-interval rejected",
+			config: Config{
+				Interface:  "eth0",
+				GCInterval: "0s",
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative tcp-timeout rejected",
+			config: Config{
+				Interface:  "eth0",
+				TCPTimeout: "-1s",
+			},
+			wantErr: true,
+		},
+		{
+			name: "max-sessions too small rejected",
+			config: Config{
+				Interface:   "eth0",
+				MaxSessions: 3,
+			},
+			wantErr: true,
+		},
+		{
+			name: "max-sessions at minimum boundary accepted",
+			config: Config{
+				Interface:   "eth0",
+				MaxSessions: 8,
+			},
+			wantErr: false,
+		},
+		{
+			name: "max-sessions zero (use default) accepted",
+			config: Config{
+				Interface:   "eth0",
+				MaxSessions: 0,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

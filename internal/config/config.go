@@ -29,8 +29,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("interface is required")
 	}
 
-	if c.ExternalIP != "" && net.ParseIP(c.ExternalIP) == nil {
-		return fmt.Errorf("invalid external-ip: %s", c.ExternalIP)
+	if c.ExternalIP != "" {
+		ip := net.ParseIP(c.ExternalIP)
+		if ip == nil {
+			return fmt.Errorf("invalid external-ip: %s", c.ExternalIP)
+		}
+		if ip.To4() == nil {
+			return fmt.Errorf("external-ip must be IPv4: %s", c.ExternalIP)
+		}
 	}
 
 	if c.InternalNet != "" {
@@ -50,10 +56,22 @@ func (c *Config) Validate() error {
 
 	for _, d := range durations {
 		if d.value != "" {
-			if _, err := time.ParseDuration(d.value); err != nil {
+			dur, err := time.ParseDuration(d.value)
+			if err != nil {
 				return fmt.Errorf("invalid %s duration: %w", d.name, err)
 			}
+			if dur <= 0 {
+				return fmt.Errorf("invalid %s duration: must be positive, got %s", d.name, d.value)
+			}
 		}
+	}
+
+	if c.MaxSessions > 0 && c.MaxSessions < 8 {
+		return fmt.Errorf("max-sessions must be at least 8, got %d", c.MaxSessions)
+	}
+
+	if c.Metrics.Enabled && (c.Metrics.Port < 1 || c.Metrics.Port > 65535) {
+		return fmt.Errorf("invalid metrics-port: %d (must be 1-65535)", c.Metrics.Port)
 	}
 
 	for i, r := range c.SNAT {
@@ -94,8 +112,13 @@ func (r *Rule) Validate() error {
 	if r.DstIP != "" && r.DstIP != "0.0.0.0" && net.ParseIP(r.DstIP) == nil {
 		return fmt.Errorf("invalid dst-ip: %s", r.DstIP)
 	}
-	if r.TransIP != "" && net.ParseIP(r.TransIP) == nil {
+	if r.TransIP == "" {
+		return fmt.Errorf("trans-ip is required")
+	}
+	if ip := net.ParseIP(r.TransIP); ip == nil {
 		return fmt.Errorf("invalid trans-ip: %s", r.TransIP)
+	} else if ip.To4() == nil {
+		return fmt.Errorf("trans-ip must be IPv4: %s", r.TransIP)
 	}
 	if r.Protocol != "tcp" && r.Protocol != "udp" && r.Protocol != "TCP" && r.Protocol != "UDP" {
 		return fmt.Errorf("invalid protocol: %s (must be tcp or udp)", r.Protocol)

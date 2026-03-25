@@ -109,7 +109,7 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
         old_ip = iph->daddr;
         new_ip = entry->translated_ip;
     }
-    
+
     new_port_be = bpf_htons(entry->translated_port);
 
     if (protocol == IPPROTO_TCP) {
@@ -142,8 +142,7 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
         }
         update_ip_csum(skb, l3_off, old_ip, new_ip);
         update_udp_csum(skb, l4_off, old_ip, new_ip, old_port_be, new_port_be);
-    }
- else if (protocol == IPPROTO_ICMP) {
+    } else if (protocol == IPPROTO_ICMP) {
         struct icmphdr *ih = data + l4_off;
         if ((void *)(ih + 1) > data_end) return TC_ACT_OK;
 
@@ -152,8 +151,8 @@ static __always_inline int apply_nat(struct __sk_buff *skb, struct nat_entry *en
             ih->un.echo.id = new_port_be;
             if (is_snat) iph->saddr = new_ip;
             else iph->daddr = new_ip;
-            
-            bpf_l3_csum_replace(skb, l3_off + offsetof(struct iphdr, check), old_ip, new_ip, sizeof(new_ip));
+
+            update_ip_csum(skb, l3_off, old_ip, new_ip);
             bpf_l4_csum_replace(skb, l4_off + offsetof(struct icmphdr, checksum), old_port_be, new_port_be, sizeof(new_port_be));
         }
     }
@@ -171,7 +170,7 @@ static __always_inline int apply_nat_icmp_error(struct __sk_buff *skb, struct na
     struct iphdr *outer_iph = data + l3_off;
     struct icmphdr *ih = data + l3_off + 20;
     struct iphdr *inner_iph = data + l3_off + 28;
-    
+
     __be32 old_inner_src = inner_iph->saddr;
     __be32 new_inner_src = entry->translated_ip;
     __be16 old_inner_port_be = 0;
@@ -190,10 +189,11 @@ static __always_inline int apply_nat_icmp_error(struct __sk_buff *skb, struct na
     // Checksums
     update_ip_csum(skb, l3_off + 28, old_inner_src, new_inner_src); // Inner IP
     update_ip_csum(skb, l3_off, old_outer_dst, new_outer_dst); // Outer IP
-    
-    // ICMP checksum covers the payload (inner headers)
-    bpf_l4_csum_replace(skb, l3_off + 20 + offsetof(struct icmphdr, checksum), old_inner_src, new_inner_src, sizeof(new_inner_src));
-    if (old_inner_port_be != 0) {
+
+    // ICMP checksum covers the entire payload (inner IP header + inner L4 header).
+    // The inner saddr change and the resulting inner IP checksum change cancel each
+    // other in one's complement arithmetic, so only the port change needs adjustment.
+    if (old_inner_port_be != new_inner_port_be) {
         bpf_l4_csum_replace(skb, l3_off + 20 + offsetof(struct icmphdr, checksum), old_inner_port_be, new_inner_port_be, sizeof(new_inner_port_be));
     }
 
@@ -211,6 +211,8 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     __u32 l3_off = sizeof(struct ethhdr);
 
     // Support VLAN tags (802.1Q)
+    // Note: QinQ (802.1AD) outer tag is detected but only one tag layer is stripped.
+    // Full QinQ support would add ~30 BPF instructions, pushing near verifier complexity limits.
     if (eth_proto == bpf_htons(ETH_P_8021Q) || eth_proto == bpf_htons(ETH_P_8021AD)) {
         struct {
             __be16 tci;
@@ -229,9 +231,28 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     struct iphdr *iph = data + l3_off;
     if ((void *)(iph + 1) > data_end) return TC_ACT_OK;
 
-    // Adjust offsets for checksum updates and helper functions
+    // Security: Validate IP version to reject malformed packets
+    if (iph->version != 4) return TC_ACT_OK;
+
+    // Validate IP header length (IHL)
+    __u8 ihl = iph->ihl;
+    if (ihl < 5 || ihl > 15) return TC_ACT_OK;
+
+    // Skip packets with IP options — variable IHL breaks BPF verifier's
+    // ability to track packet offsets. Standard packets (99%+) have IHL=5.
+    if (ihl != 5) return TC_ACT_OK;
+
+    // Security: Skip non-first IP fragments — they lack complete L4 headers
+    __u16 frag_off = bpf_ntohs(iph->frag_off) & 0x1FFF;
+    if (frag_off != 0) return TC_ACT_OK;
+
+    // Validate IP total length is sane (at least 20 bytes for standard header)
+    __u16 tot_len = bpf_ntohs(iph->tot_len);
+    if (tot_len < 20) return TC_ACT_OK;
+
+    // Fixed L4 offset: IHL is always 5 (20 bytes) after the check above
     __u32 l4_off = l3_off + sizeof(struct iphdr);
-    
+
     struct nat_key key = {0};
     key.src_ip   = iph->saddr;
     key.dst_ip   = iph->daddr;
@@ -258,7 +279,8 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             key.src_port = bpf_ntohs(ih->un.echo.id);
             key.dst_port = bpf_ntohs(ih->un.echo.id);
         } else if (ih->type == ICMP_DEST_UNREACH || ih->type == ICMP_TIME_EXCEEDED) {
-            if (is_ingress) {
+            // Inner IP starts after ICMP header (8 bytes)
+            {
                 struct iphdr *inner_iph = (void *)(ih + 1);
                 if ((void *)(inner_iph + 1) > data_end) return TC_ACT_OK;
 
@@ -272,38 +294,25 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
                 lookup_key.src_port = bpf_ntohs(inner_ports[1]);
                 lookup_key.dst_port = bpf_ntohs(inner_ports[0]);
 
-                struct nat_entry *inner_entry = bpf_map_lookup_elem(&reverse_nat_map, &lookup_key);
-                if (inner_entry) {
-                    update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
-                    return apply_nat_icmp_error(skb, inner_entry, l3_off);
-                }
-            } else {
-                // Egress ICMP Error: Internal host sends error for incoming DNAT/SNAT packet
-                struct iphdr *inner_iph = (void *)(ih + 1);
-                if ((void *)(inner_iph + 1) > data_end) return TC_ACT_OK;
+                if (is_ingress) {
+                    struct nat_entry *inner_entry = bpf_map_lookup_elem(&reverse_nat_map, &lookup_key);
+                    if (inner_entry) {
+                        update_metrics(iph->protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
+                        return apply_nat_icmp_error(skb, inner_entry, l3_off);
+                    }
+                } else {
+                    // Egress ICMP Error: check DNAT rules then conntrack
+                    struct nat_entry *inner_entry = bpf_map_lookup_elem(&dnat_rules, &lookup_key);
+                    if (inner_entry) {
+                        update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+                        return apply_nat_icmp_error(skb, inner_entry, l3_off);
+                    }
 
-                struct nat_key lookup_key = {0};
-                lookup_key.src_ip = inner_iph->daddr;
-                lookup_key.dst_ip = inner_iph->saddr;
-                lookup_key.protocol = inner_iph->protocol;
-
-                if ((void *)(data + l4_off + 32) > data_end) return TC_ACT_OK;
-                __be16 *inner_ports = (void *)(data + l4_off + 28);
-                lookup_key.src_port = bpf_ntohs(inner_ports[1]);
-                lookup_key.dst_port = bpf_ntohs(inner_ports[0]);
-
-                // 1. Check if it's a response to a DNATed packet
-                struct nat_entry *inner_entry = bpf_map_lookup_elem(&dnat_rules, &lookup_key);
-                if (inner_entry) {
-                    update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
-                    return apply_nat_icmp_error(skb, inner_entry, l3_off);
-                }
-
-                // 2. Check if it's a response to a dynamic SNAT (Reverse check)
-                inner_entry = bpf_map_lookup_elem(&conntrack_map, &lookup_key);
-                if (inner_entry) {
-                    update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
-                    return apply_nat_icmp_error(skb, inner_entry, l3_off);
+                    inner_entry = bpf_map_lookup_elem(&conntrack_map, &lookup_key);
+                    if (inner_entry) {
+                        update_metrics(iph->protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
+                        return apply_nat_icmp_error(skb, inner_entry, l3_off);
+                    }
                 }
             }
             return TC_ACT_OK;
@@ -332,13 +341,13 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
             data_end = (void *)(long)skb->data_end;
             struct iphdr *iph2 = (void *)(data + l3_off);
             if ((void *)(iph2 + 1) > data_end) return TC_ACT_OK;
-            
+
             if (iph2->protocol == IPPROTO_TCP && cfg) {
-                struct tcphdr *th = (void *)(iph2 + 1);
+                struct tcphdr *th = (void *)(data + l4_off);
                 if ((void *)(th + 1) > data_end) return TC_ACT_OK;
                 clamp_mss(skb, th, cfg->max_mss, l4_off);
             }
-            
+
             return apply_nat(skb, entry, false, l3_off, l4_off);
         }
 
@@ -346,17 +355,17 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
         if (entry) {
             entry->last_seen = bpf_ktime_get_ns();
             update_metrics(key.protocol, DIRECTION_INGRESS, ACTION_TRANSLATED, skb->len);
-            
+
             data     = (void *)(long)skb->data;
             data_end = (void *)(long)skb->data_end;
             struct iphdr *iph2 = (void *)(data + l3_off);
             if ((void *)(iph2 + 1) > data_end) return TC_ACT_OK;
             if (iph2->protocol == IPPROTO_TCP && cfg) {
-                struct tcphdr *th = (void *)(iph2 + 1);
+                struct tcphdr *th = (void *)(data + l4_off);
                 if ((void *)(th + 1) > data_end) return TC_ACT_OK;
                 clamp_mss(skb, th, cfg->max_mss, l4_off);
             }
-            
+
             return apply_nat(skb, entry, false, l3_off, l4_off);
         }
     } else {
@@ -368,20 +377,19 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
                 entry->last_seen = bpf_ktime_get_ns();
             }
             update_metrics(key.protocol, DIRECTION_EGRESS, ACTION_TRANSLATED, skb->len);
-            
+
             data     = (void *)(long)skb->data;
             data_end = (void *)(long)skb->data_end;
             struct iphdr *iph2 = (void *)(data + l3_off);
             if ((void *)(iph2 + 1) > data_end) return TC_ACT_OK;
             if (iph2->protocol == IPPROTO_TCP && cfg) {
-                struct tcphdr *th = (void *)(iph2 + 1);
+                struct tcphdr *th = (void *)(data + l4_off);
                 if ((void *)(th + 1) > data_end) return TC_ACT_OK;
                 clamp_mss(skb, th, cfg->max_mss, l4_off);
             }
-            
+
             return apply_nat(skb, entry, true, l3_off, l4_off);
         }
-
 
         if (!cfg || cfg->external_ip == 0) return TC_ACT_OK;
         if (iph->saddr == cfg->external_ip) return TC_ACT_OK;
@@ -397,7 +405,7 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
 
         // Security: For TCP, only create sessions on SYN packets
         if (iph->protocol == IPPROTO_TCP) {
-            struct tcphdr *th = (void *)(iph + 1);
+            struct tcphdr *th = (void *)(data + l4_off);
             if ((void *)(th + 1) > data_end) return TC_ACT_OK;
             if (!(th->syn) || th->ack) {
                 // Not a SYN packet or has ACK (not a new connection attempt)
@@ -507,9 +515,7 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
         struct iphdr *iph3 = (void *)(data + l3_off);
         if ((void *)(iph3 + 1) > data_end) return TC_ACT_OK;
         if (iph3->protocol == IPPROTO_TCP) {
-            struct tcphdr *th = (void *)(iph3 + 1); // wait, this should be data + l4_off
-            // Refetching pointers for the verifier
-            struct tcphdr *th_final = data + l4_off;
+            struct tcphdr *th_final = (void *)(data + l4_off);
             if ((void *)(th_final + 1) > data_end) return TC_ACT_OK;
             clamp_mss(skb, th_final, cfg->max_mss, l4_off);
         }
