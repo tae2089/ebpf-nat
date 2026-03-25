@@ -173,8 +173,10 @@ func countMapEntries(m *ebpf.Map) uint64 {
 		count++
 	}
 	if err := iter.Err(); err != nil {
-		slog.Warn("Failed to count map entries, result may be incomplete", slog.Any("error", err))
-		return 0
+		slog.Warn("Failed to count map entries, result may be incomplete",
+			slog.Any("error", err),
+			slog.Uint64("partial_count", count))
+		return count
 	}
 	return count
 }

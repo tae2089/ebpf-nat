@@ -35,9 +35,37 @@ KillSignal=SIGTERM
 Restart=on-failure
 RestartSec=5
 
-# eBPF requires memlock and net/sys/bpf/perfmon capabilities
+# eBPF requires memlock and net/bpf/perfmon capabilities
+# E-1: CAP_SYS_ADMIN을 제거하고 최소 권한 원칙에 따라 CAP_BPF와 CAP_NET_ADMIN만 사용한다.
+# CAP_SYS_ADMIN은 거의 root와 동등한 권한으로 불필요한 공격 표면을 제공한다.
+# Linux 5.8+에서 CAP_BPF가 도입되어 BPF 작업에 CAP_SYS_ADMIN이 불필요해졌다.
 LimitMEMLOCK=infinity
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_BPF CAP_PERFMON
+AmbientCapabilities=CAP_NET_ADMIN CAP_BPF CAP_PERFMON
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ebpf-nat
+PrivateTmp=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+
+# Additional security hardening (보안 전문가 2차 검토)
+# BPF 프로그램 로드에 필요한 syscall만 허용하고 불필요한 syscall은 차단한다.
+SystemCallFilter=@system-service bpf perf_event_open
+SystemCallArchitectures=native
+# eBPF는 AF_NETLINK(netlink), AF_PACKET(raw socket) 접근이 필요하다
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+LockPersonality=yes
+ProtectHostname=yes
 
 [Install]
 WantedBy=multi-user.target

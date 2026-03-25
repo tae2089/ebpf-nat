@@ -83,7 +83,7 @@ func TestAutoDetector_GetPublicIP(t *testing.T) {
 	t.Run("all fail", func(t *testing.T) {
 		d1 := &mockDetector{name: "d1", err: errors.New("fail1"), failUntil: 3}
 		d2 := &mockDetector{name: "d2", err: errors.New("fail2"), failUntil: 3}
-		
+
 		auto := &AutoDetector{Detectors: []Detector{d1, d2}}
 		_, err := auto.GetPublicIP(context.Background())
 		if err == nil {
@@ -93,4 +93,58 @@ func TestAutoDetector_GetPublicIP(t *testing.T) {
 			t.Errorf("expected 3 attempts each, got d1=%d, d2=%d", d1.attempts, d2.attempts)
 		}
 	})
+}
+
+// TestAutoDetector_SkipsInvalidPublicIP: 항목 2
+// 하위 detector가 사설 IP나 loopback IP를 반환하면 ValidatePublicIP 실패 →
+// 다음 detector로 넘어가야 한다.
+func TestAutoDetector_SkipsInvalidPublicIP(t *testing.T) {
+	tests := []struct {
+		name        string
+		d1IP        net.IP
+		d2IP        net.IP
+		expectedIP  string
+		expectError bool
+	}{
+		{
+			name:       "첫 번째 detector가 사설 IP 반환 시 두 번째로 넘어감",
+			d1IP:       net.ParseIP("192.168.1.1"), // 사설 IP (ValidatePublicIP 실패)
+			d2IP:       net.ParseIP("1.2.3.4"),     // 유효한 공인 IP
+			expectedIP: "1.2.3.4",
+		},
+		{
+			name:       "첫 번째 detector가 loopback 반환 시 두 번째로 넘어감",
+			d1IP:       net.ParseIP("127.0.0.1"), // loopback (ValidatePublicIP 실패)
+			d2IP:       net.ParseIP("5.6.7.8"),   // 유효한 공인 IP
+			expectedIP: "5.6.7.8",
+		},
+		{
+			name:        "모두 사설 IP 반환 시 에러",
+			d1IP:        net.ParseIP("10.0.0.1"),   // 사설 IP
+			d2IP:        net.ParseIP("172.16.0.1"), // 사설 IP
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d1 := &mockDetector{name: "d1", ip: tt.d1IP}
+			d2 := &mockDetector{name: "d2", ip: tt.d2IP}
+			auto := &AutoDetector{Detectors: []Detector{d1, d2}}
+
+			ip, err := auto.GetPublicIP(context.Background())
+			if tt.expectError {
+				if err == nil {
+					t.Error("expected error but got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ip.String() != tt.expectedIP {
+				t.Errorf("expected %s, got %s", tt.expectedIP, ip.String())
+			}
+		})
+	}
 }

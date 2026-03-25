@@ -57,9 +57,13 @@ func init() {
 	rootCmd.Flags().Uint32Var(&cfg.BatchUpdateSize, "batch-update-size", 1000, "Batch update size for session restoration")
 	rootCmd.Flags().StringVar(&cfg.SessionFile, "session-file", "/var/lib/ebpf-nat/sessions.gob", "Path to save/restore sessions")
 
+	rootCmd.Flags().Float64Var(&cfg.RestorationFailureThreshold, "restoration-failure-threshold", 0.5, "Max acceptable session restoration failure rate (0.0-1.0)")
+	rootCmd.Flags().Uint32Var(&cfg.MaxSessionsPerSource, "max-sessions-per-source", 0, "Max NAT sessions per source IP (0 to disable monitoring)")
+
 	rootCmd.Flags().BoolVar(&cfg.Metrics.Enabled, "metrics-enabled", false, "Enable Prometheus metrics")
 	rootCmd.Flags().StringVar(&cfg.Metrics.Address, "metrics-address", "127.0.0.1", "Prometheus metrics listen address")
 	rootCmd.Flags().IntVar(&cfg.Metrics.Port, "metrics-port", 9090, "Prometheus metrics port")
+	rootCmd.Flags().StringVar(&cfg.Metrics.BearerToken, "metrics-bearer-token", "", "Bearer token for metrics endpoint authentication (env: EBPF_NAT_METRICS_TOKEN)")
 }
 
 func run() {
@@ -155,8 +159,14 @@ func run() {
 		metrics.NewScraper(&objs, natMgr, prometheus.DefaultRegisterer)
 		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Address, cfg.Metrics.Port)
 
+		// 환경변수에서 Bearer Token 로드 (CLI 플래그보다 우선)
+		if envToken := os.Getenv("EBPF_NAT_METRICS_TOKEN"); envToken != "" {
+			cfg.Metrics.BearerToken = envToken
+		}
+
 		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
+		metricsHandler := promhttp.Handler()
+		mux.Handle("/metrics", metrics.BearerTokenMiddleware(cfg.Metrics.BearerToken, metricsHandler))
 
 		server := &http.Server{
 			Addr:              addr,

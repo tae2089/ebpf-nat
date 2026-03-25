@@ -52,11 +52,13 @@ struct {
 } metrics_map SEC(".maps");
 
 static __always_inline void update_metrics(__u8 protocol, __u8 direction, __u8 action, __u32 bytes) {
-    struct metrics_key key = {
-        .protocol = protocol,
-        .direction = direction,
-        .action = action,
-    };
+    // C-1: zero-initialization으로 패딩 바이트가 가비지 값을 갖지 않도록 한다.
+    // 컴파일러가 추가한 패딩 바이트가 초기화되지 않으면 동일한 논리 키가
+    // 다른 패딩 값으로 인해 서로 다른 맵 엔트리를 참조할 수 있다.
+    struct metrics_key key = {};
+    key.protocol = protocol;
+    key.direction = direction;
+    key.action = action;
     struct metrics_value *val = bpf_map_lookup_elem(&metrics_map, &key);
     if (val) {
         val->packets++;
@@ -171,6 +173,17 @@ static __always_inline int apply_nat_icmp_error(struct __sk_buff *skb, struct na
     struct icmphdr *ih = data + l3_off + 20;
     struct iphdr *inner_iph = data + l3_off + 28;
 
+    // C-2: inner IP 헤더의 IHL을 검증한다.
+    // IHL > 5이면 IP 옵션이 포함되어 포트 오프셋(l3_off+48)이 틀려지므로 패킷을 통과시킨다.
+    if (inner_iph->ihl != 5) return TC_ACT_OK;
+
+    // C-3: inner L4 프로토콜 검증
+    // ICMP 에러 메시지의 inner 패킷은 TCP 또는 UDP여야 한다.
+    // 다른 프로토콜의 경우 포트 필드가 없으므로 수정 없이 통과시킨다.
+    if (inner_iph->protocol != IPPROTO_TCP && inner_iph->protocol != IPPROTO_UDP) {
+        return TC_ACT_OK;
+    }
+
     __be32 old_inner_src = inner_iph->saddr;
     __be32 new_inner_src = entry->translated_ip;
     __be16 old_inner_port_be = 0;
@@ -242,9 +255,17 @@ static __always_inline int handle_nat(struct __sk_buff *skb, bool is_ingress) {
     // ability to track packet offsets. Standard packets (99%+) have IHL=5.
     if (ihl != 5) return TC_ACT_OK;
 
-    // Security: Skip non-first IP fragments — they lack complete L4 headers
-    __u16 frag_off = bpf_ntohs(iph->frag_off) & 0x1FFF;
-    if (frag_off != 0) return TC_ACT_OK;
+    // Security: Skip IP fragments — they lack complete L4 headers
+    // frag_offset != 0: non-first fragment (no L4 header)
+    // more_frags (MF bit): first fragment with more fragments following
+    // Both cases must be skipped to prevent incomplete L4 header processing.
+#ifndef IP_MF
+#define IP_MF 0x2000
+#endif
+    __u16 frag_info = bpf_ntohs(iph->frag_off);
+    __u16 frag_offset = frag_info & 0x1FFF;
+    bool more_frags = (frag_info & IP_MF) != 0;
+    if (frag_offset != 0 || more_frags) return TC_ACT_OK;
 
     // Validate IP total length is sane (at least 20 bytes for standard header)
     __u16 tot_len = bpf_ntohs(iph->tot_len);

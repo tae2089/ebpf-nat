@@ -35,6 +35,7 @@ type GarbageCollector struct {
 	objects              *bpf.NatObjects
 	tcpTimeout           time.Duration
 	tcpClosingTimeout    time.Duration
+	tcpSynSentTimeout    time.Duration // TCP SYN-SENT(half-open) 세션 타임아웃
 	udpTimeout           time.Duration
 	maxSessionsPerSource uint32 // 0 = 비활성 (per-source 세션 수 경고 임계값)
 }
@@ -44,6 +45,7 @@ func NewGarbageCollector(objs *bpf.NatObjects, tcpTimeout, udpTimeout time.Durat
 		objects:              objs,
 		tcpTimeout:           tcpTimeout,
 		tcpClosingTimeout:    2 * time.Minute,
+		tcpSynSentTimeout:    75 * time.Second, // RFC 793 SYN 재전송 타임아웃 기준
 		udpTimeout:           udpTimeout,
 		maxSessionsPerSource: 0, // 기본: 비활성
 	}
@@ -140,6 +142,26 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 			var timeout time.Duration
 			if entry.State == NatStateClosing {
 				timeout = gc.tcpClosingTimeout
+			} else if key.Protocol == syscall.IPPROTO_TCP && entry.State == NatStateActive && gc.objects.ReverseNatMap != nil {
+				// TCP ACTIVE 상태인데 reverse_nat_map에 엔트리가 없으면 SYN-SENT(half-open)로 간주한다.
+				// 이 경우 tcpSynSentTimeout(기본 75초)을 적용하여 포트 점유를 방지한다.
+				revKey := bpf.NatNatKey{
+					SrcIp:    key.DstIp,
+					DstIp:    entry.TranslatedIp,
+					SrcPort:  key.DstPort,
+					DstPort:  entry.TranslatedPort,
+					Protocol: key.Protocol,
+				}
+				var revEntry bpf.NatNatEntry
+				if lookupErr := gc.objects.ReverseNatMap.Lookup(revKey, &revEntry); lookupErr != nil {
+					// reverse 엔트리 없음 → half-open 세션
+					timeout = gc.tcpSynSentTimeout
+					slog.Debug("TCP session has no reverse entry, applying syn-sent timeout",
+						slog.Any("key", key),
+						slog.Duration("timeout", timeout))
+				} else {
+					timeout = gc.tcpTimeout
+				}
 			} else {
 				switch key.Protocol {
 				case syscall.IPPROTO_TCP:

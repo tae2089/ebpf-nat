@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package nat
 
@@ -279,9 +278,15 @@ func TestGarbageCollector_StateAwareTimeout(t *testing.T) {
 	udpTimeout := 5 * time.Minute
 
 	// Session 1: Active TCP, 5 minutes old (should stay)
+	// Note: reverse_nat_map에 엔트리가 있어야 SYN-SENT가 아닌 일반 TCP 세션으로 처리됨.
+	// reverse 엔트리가 없으면 half-open(SYN-SENT)으로 간주되어 tcpSynSentTimeout(75초) 적용됨.
 	activeKey := bpf.NatNatKey{SrcIp: 1, DstIp: 2, SrcPort: 100, DstPort: 200, Protocol: syscall.IPPROTO_TCP}
 	activeEntry := bpf.NatNatEntry{TranslatedIp: 10, TranslatedPort: 1000, State: NatStateActive, LastSeen: now - uint64(5*time.Minute.Nanoseconds())}
 	conntrackMap.Update(activeKey, activeEntry, 0)
+	// Reverse 엔트리 추가: 이 세션은 완전히 수립된 TCP 세션 (SYN-SENT 아님)
+	activeRevKey := bpf.NatNatKey{SrcIp: 2, DstIp: 10, SrcPort: 200, DstPort: 1000, Protocol: syscall.IPPROTO_TCP}
+	activeRevEntry := bpf.NatNatEntry{TranslatedIp: 1, TranslatedPort: 100, LastSeen: now - uint64(5*time.Minute.Nanoseconds())}
+	reverseNatMap.Update(activeRevKey, activeRevEntry, 0)
 
 	// Session 2: Closing TCP, 5 minutes old (should be evicted because closing timeout is 2m)
 	closingKey := bpf.NatNatKey{SrcIp: 3, DstIp: 4, SrcPort: 300, DstPort: 400, Protocol: syscall.IPPROTO_TCP}
@@ -435,6 +440,143 @@ func TestGarbageCollector_ICMPReverseKey(t *testing.T) {
 	}
 	if err := reverseNatMap.Lookup(revKey, &entry); err == nil {
 		t.Error("Expired ICMP reverse entry was not deleted from reverse_nat_map")
+	}
+}
+
+// TestGarbageCollector_PerSourceSessionWarning: per-source 세션 수 임계값 초과 경고
+// 단일 소스 IP가 NAT 테이블을 독점하는 것을 탐지하기 위해
+// maxSessionsPerSource 임계값 초과 시 경고 로그가 발생해야 한다.
+func TestGarbageCollector_PerSourceSessionWarning(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conntrackMap, err := ebpf.NewMap(spec.Maps["conntrack_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conntrackMap.Close()
+
+	reverseNatMap, err := ebpf.NewMap(spec.Maps["reverse_nat_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseNatMap.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap:  conntrackMap,
+			ReverseNatMap: reverseNatMap,
+		},
+	}
+
+	now := uint64(time.Now().UnixNano())
+	tcpTimeout := 24 * time.Hour
+	udpTimeout := 5 * time.Minute
+
+	// 단일 소스 IP(srcIP=1)에서 3개의 TCP 세션 생성
+	srcIP := uint32(0xC0A8010A) // 192.168.1.10
+	for i := range 3 {
+		key := bpf.NatNatKey{
+			SrcIp:    srcIP,
+			DstIp:    uint32(0x08080808 + i),
+			SrcPort:  uint16(10000 + i),
+			DstPort:  80,
+			Protocol: syscall.IPPROTO_TCP,
+		}
+		entry := bpf.NatNatEntry{
+			TranslatedIp:   uint32(0x0A000001),
+			TranslatedPort: uint16(40000 + i),
+			LastSeen:       now, // active
+		}
+		if err := conntrackMap.Update(key, entry, 0); err != nil {
+			t.Fatalf("Failed to insert entry: %v", err)
+		}
+	}
+
+	// maxSessionsPerSource = 2로 설정 → 3개 세션이 있으므로 경고 발생 예상
+	gc := NewGarbageCollector(objs, tcpTimeout, udpTimeout)
+	gc.maxSessionsPerSource = 2
+
+	// RunOnce 실행 - 경고는 로그로 출력되지만 에러는 반환하지 않아야 함
+	if err := gc.RunOnce(context.Background(), now); err != nil {
+		t.Errorf("RunOnce should not return error for session limit warning: %v", err)
+	}
+
+	// 세션들은 만료되지 않았으므로 그대로 남아있어야 함
+	var entry bpf.NatNatEntry
+	for i := range 3 {
+		key := bpf.NatNatKey{
+			SrcIp:    srcIP,
+			DstIp:    uint32(0x08080808 + i),
+			SrcPort:  uint16(10000 + i),
+			DstPort:  80,
+			Protocol: syscall.IPPROTO_TCP,
+		}
+		if err := conntrackMap.Lookup(key, &entry); err != nil {
+			t.Errorf("Active session should not have been deleted: %v", err)
+		}
+	}
+}
+
+// TestGarbageCollector_PerSourceDisabled: maxSessionsPerSource=0이면 경고 비활성화
+func TestGarbageCollector_PerSourceDisabled(t *testing.T) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	spec, err := bpf.LoadNat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conntrackMap, err := ebpf.NewMap(spec.Maps["conntrack_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conntrackMap.Close()
+
+	reverseNatMap, err := ebpf.NewMap(spec.Maps["reverse_nat_map"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseNatMap.Close()
+
+	objs := &bpf.NatObjects{
+		NatMaps: bpf.NatMaps{
+			ConntrackMap:  conntrackMap,
+			ReverseNatMap: reverseNatMap,
+		},
+	}
+
+	now := uint64(time.Now().UnixNano())
+	srcIP := uint32(0xC0A8010A)
+	for i := range 5 {
+		key := bpf.NatNatKey{
+			SrcIp:    srcIP,
+			DstIp:    uint32(0x08080808 + i),
+			SrcPort:  uint16(10000 + i),
+			DstPort:  80,
+			Protocol: syscall.IPPROTO_TCP,
+		}
+		entry := bpf.NatNatEntry{LastSeen: now}
+		if err := conntrackMap.Update(key, entry, 0); err != nil {
+			t.Fatalf("Failed to insert entry: %v", err)
+		}
+	}
+
+	// maxSessionsPerSource=0 → 비활성화됨
+	gc := NewGarbageCollector(objs, 24*time.Hour, 5*time.Minute)
+	gc.maxSessionsPerSource = 0 // 비활성화
+
+	// 정상적으로 실행되어야 함
+	if err := gc.RunOnce(context.Background(), now); err != nil {
+		t.Errorf("RunOnce failed: %v", err)
 	}
 }
 

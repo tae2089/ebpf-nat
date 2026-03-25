@@ -19,6 +19,15 @@ type Config struct {
 	MaxSessions     uint32 // Maximum NAT sessions
 	BatchUpdateSize uint32 // Batch update size for session restoration
 	SessionFile     string // path to save/restore sessions
+	// RestorationFailureThreshold: 세션 복원 실패율 임계값 (0.0~1.0, 기본값 0.5)
+	// 복원 실패율이 이 값을 초과하면 경고를 출력한다.
+	// 0.0: 실패 즉시 에러, 1.0: 모든 실패 무시
+	RestorationFailureThreshold float64
+	// MaxSessionsPerSource: 단일 소스 IP의 최대 세션 수 (0=비활성)
+	MaxSessionsPerSource uint32
+	// TCPSynSentTimeout: TCP SYN 이후 응답 없는 half-open 연결의 타임아웃 (기본값 75초, 최솟값 30초)
+	// reverse_nat_map 엔트리가 없는 TCP ACTIVE 세션에 적용된다.
+	TCPSynSentTimeout string
 	Metrics         MetricsConfig
 	SNAT            []Rule
 	DNAT            []Rule
@@ -45,13 +54,17 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// G-5: 타임아웃 최솟값 검증
+	// 너무 작은 값은 CPU 독점(GC) 또는 세션 조기 종료(TCP/UDP) 등 운영 문제를 일으킨다.
 	durations := []struct {
-		name  string
-		value string
+		name   string
+		value  string
+		minVal time.Duration
 	}{
-		{"gc-interval", c.GCInterval},
-		{"tcp-timeout", c.TCPTimeout},
-		{"udp-timeout", c.UDPTimeout},
+		{"gc-interval", c.GCInterval, time.Second},
+		{"tcp-timeout", c.TCPTimeout, time.Minute},
+		{"udp-timeout", c.UDPTimeout, 10 * time.Second},
+		{"tcp-syn-sent-timeout", c.TCPSynSentTimeout, 30 * time.Second},
 	}
 
 	for _, d := range durations {
@@ -62,6 +75,9 @@ func (c *Config) Validate() error {
 			}
 			if dur <= 0 {
 				return fmt.Errorf("invalid %s duration: must be positive, got %s", d.name, d.value)
+			}
+			if dur < d.minVal {
+				return fmt.Errorf("invalid %s duration: must be at least %s, got %s", d.name, d.minVal, d.value)
 			}
 		}
 	}
@@ -79,8 +95,21 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// RestorationFailureThreshold 검증: 0.0~1.0 범위
+	if c.RestorationFailureThreshold < 0.0 || c.RestorationFailureThreshold > 1.0 {
+		return fmt.Errorf("invalid restoration-failure-threshold: %.2f (must be 0.0-1.0)", c.RestorationFailureThreshold)
+	}
+
 	if c.Metrics.Enabled && (c.Metrics.Port < 1 || c.Metrics.Port > 65535) {
 		return fmt.Errorf("invalid metrics-port: %d (must be 1-65535)", c.Metrics.Port)
+	}
+
+	// 메트릭이 활성화되고 비-localhost 주소에 바인딩하는데 토큰이 없으면 에러
+	// 토큰 없이 공개 주소에 메트릭을 노출하면 무인증으로 접근 가능해 보안 취약점이 된다.
+	if c.Metrics.Enabled && c.Metrics.BearerToken == "" && c.Metrics.Address != "" {
+		if !isLocalhostAddress(c.Metrics.Address) {
+			return fmt.Errorf("metrics address %q is not localhost; bearer token required for security", c.Metrics.Address)
+		}
 	}
 
 	for i, r := range c.SNAT {
@@ -99,9 +128,10 @@ func (c *Config) Validate() error {
 }
 
 type MetricsConfig struct {
-	Enabled bool
-	Address string
-	Port    int
+	Enabled     bool
+	Address     string
+	Port        int
+	BearerToken string // Bearer token for authentication (empty = no auth)
 }
 
 type Rule struct {
@@ -114,6 +144,37 @@ type Rule struct {
 	TransPort uint16
 }
 
+// isLocalhostAddress는 주소 문자열이 localhost 계열인지 확인한다.
+// 127.0.0.1, ::1, localhost를 localhost로 간주한다.
+func isLocalhostAddress(addr string) bool {
+	switch addr {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
+}
+
+// validateTranslationIP는 DNAT/SNAT 번역 대상 IP가 유효한지 검증한다.
+// 루프백, 멀티캐스트, 미지정, 브로드캐스트, 링크-로컬 주소는 번역 대상으로 부적절하다.
+func validateTranslationIP(ip net.IP) error {
+	if ip.IsLoopback() {
+		return fmt.Errorf("loopback address not allowed as translation target: %s", ip)
+	}
+	if ip.IsMulticast() {
+		return fmt.Errorf("multicast address not allowed as translation target: %s", ip)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("unspecified address not allowed as translation target: %s", ip)
+	}
+	if ip.Equal(net.IPv4bcast) {
+		return fmt.Errorf("broadcast address not allowed as translation target: %s", ip)
+	}
+	if ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("link-local address not allowed as translation target: %s", ip)
+	}
+	return nil
+}
+
 func (r *Rule) Validate() error {
 	if r.SrcIP != "" && r.SrcIP != "0.0.0.0" && net.ParseIP(r.SrcIP) == nil {
 		return fmt.Errorf("invalid src-ip: %s", r.SrcIP)
@@ -124,10 +185,16 @@ func (r *Rule) Validate() error {
 	if r.TransIP == "" {
 		return fmt.Errorf("trans-ip is required")
 	}
-	if ip := net.ParseIP(r.TransIP); ip == nil {
+	transIP := net.ParseIP(r.TransIP)
+	if transIP == nil {
 		return fmt.Errorf("invalid trans-ip: %s", r.TransIP)
-	} else if ip.To4() == nil {
+	}
+	if transIP.To4() == nil {
 		return fmt.Errorf("trans-ip must be IPv4: %s", r.TransIP)
+	}
+	// 특수 용도 주소는 번역 대상으로 부적절하다
+	if err := validateTranslationIP(transIP); err != nil {
+		return fmt.Errorf("invalid trans-ip: %w", err)
 	}
 	if r.Protocol != "tcp" && r.Protocol != "udp" && r.Protocol != "TCP" && r.Protocol != "UDP" {
 		return fmt.Errorf("invalid protocol: %s (must be tcp or udp)", r.Protocol)

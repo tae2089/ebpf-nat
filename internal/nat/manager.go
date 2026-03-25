@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -47,12 +48,13 @@ const (
 type Manager struct {
 	objects      *bpf.NatObjects
 	ipDetector   ipdetect.Detector
-	privateIP       net.IP
-	tcpTimeout      time.Duration
-	udpTimeout      time.Duration
-	maxMSS          uint16
-	internalNet     uint32
-	internalMask    uint32
+	privateIP           net.IP
+	tcpTimeout          time.Duration
+	udpTimeout          time.Duration
+	tcpSynSentTimeout   time.Duration
+	maxMSS              uint16
+	internalNet         uint32
+	internalMask        uint32
 	batchUpdateSize             uint32
 	restorationFailures         uint64
 	restorationFailureThreshold float64
@@ -67,6 +69,7 @@ func NewManager(objs *bpf.NatObjects) *Manager {
 		objects:                     objs,
 		tcpTimeout:                  24 * time.Hour,
 		udpTimeout:                  5 * time.Minute,
+		tcpSynSentTimeout:           75 * time.Second,
 		batchUpdateSize:             1000,
 		restorationFailureThreshold: 0.5,
 		hmacKeyFile:                 "/var/lib/ebpf-nat/.hmac.key",
@@ -98,6 +101,14 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 			m.udpTimeout = d
 		} else {
 			slog.Warn("Failed to parse udp-timeout, using default 5m", slog.String("value", cfg.UDPTimeout), slog.Any("error", err))
+		}
+	}
+	m.tcpSynSentTimeout = 75 * time.Second
+	if cfg.TCPSynSentTimeout != "" {
+		if d, err := time.ParseDuration(cfg.TCPSynSentTimeout); err == nil {
+			m.tcpSynSentTimeout = d
+		} else {
+			slog.Warn("Failed to parse tcp-syn-sent-timeout, using default 75s", slog.String("value", cfg.TCPSynSentTimeout), slog.Any("error", err))
 		}
 	}
 	m.maxMSS = cfg.MaxMSS
@@ -279,9 +290,11 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 	m.mu.RLock()
 	tcpTimeout := m.tcpTimeout
 	udpTimeout := m.udpTimeout
+	tcpSynSentTimeout := m.tcpSynSentTimeout
 	maxSessionsPerSource := m.maxSessionsPerSource
 	m.mu.RUnlock()
 	gc := NewGarbageCollector(m.objects, tcpTimeout, udpTimeout)
+	gc.tcpSynSentTimeout = tcpSynSentTimeout
 	gc.maxSessionsPerSource = maxSessionsPerSource
 
 	for {
@@ -309,10 +322,34 @@ func (m *Manager) RunBackgroundTasks(ctx context.Context, ipDetectInterval, gcIn
 	}
 }
 
+// validateSessionPath는 세션 파일 경로의 유효성을 검증한다.
+// 경로 순회(path traversal) 공격을 방지하기 위해 '..'을 포함하거나
+// 절대 경로가 아닌 경우 에러를 반환한다.
+//
+// filepath.Clean 이전에 검사하는 이유:
+// Clean("/tmp/../etc/passwd") = "/etc/passwd"로 ".."이 사라지므로
+// Clean 이후 검사하면 우회 가능하다. 원본 경로에서 먼저 검사한다.
+func validateSessionPath(path string) error {
+	// 원본 경로에서 '..' segment 검사 (Clean으로 정규화되기 전)
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("session file path must not contain '..': %s", path)
+	}
+	cleaned := filepath.Clean(path)
+	if !filepath.IsAbs(cleaned) {
+		return fmt.Errorf("session file path must be absolute: %s", path)
+	}
+	return nil
+}
+
 // SaveSessions iterates through ConntrackMap and ReverseNatMap and saves the sessions to a file.
 // This intentionally does not check isStopping because it is called as part of graceful shutdown
 // after Shutdown() has been invoked and all background tasks (GC, IP detection) have stopped.
 func (m *Manager) SaveSessions(path string) error {
+	// 경로 검증: path traversal 공격 방지
+	if err := validateSessionPath(path); err != nil {
+		return err
+	}
+
 	// Ensure directory exists (no lock needed)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -427,6 +464,15 @@ func (m *Manager) RestoreSessions(path string) error {
 		return ErrManagerStopping
 	}
 
+	// 경로 검증: path traversal 공격 방지
+	if err := validateSessionPath(path); err != nil {
+		return err
+	}
+
+	// 반복 호출 시 이전 실패 카운터가 누적되는 것을 방지한다.
+	// 각 RestoreSessions 호출은 독립적인 복원 시도이므로 카운터를 초기화한다.
+	atomic.StoreUint64(&m.restorationFailures, 0)
+
 	// Read timeout and batch size values under lock to avoid data race
 	m.mu.RLock()
 	tcpTimeout := m.tcpTimeout
@@ -475,8 +521,8 @@ func (m *Manager) RestoreSessions(path string) error {
 		}
 		slog.Debug("Session file HMAC verified successfully")
 	} else if hmacKey != nil && !hasHMAC {
-		// 키는 있는데 HMAC이 없는 파일 → 이전 버전 파일이나 HMAC 없이 저장된 파일
-		slog.Warn("Session file has no HMAC signature; skipping integrity check (possible legacy file)")
+		// 키는 있는데 HMAC이 없는 파일 → 변조 또는 무결성 없는 파일 → 로드 거부
+		return fmt.Errorf("session file has no HMAC signature but HMAC key is configured: possible tampering at %s", path)
 	} else if hmacKey == nil && hasHMAC {
 		// 키가 없는데 HMAC이 있는 파일 → 키를 찾을 수 없어 검증 불가
 		slog.Warn("Cannot verify session file HMAC: no HMAC key available")

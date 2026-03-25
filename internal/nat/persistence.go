@@ -22,6 +22,7 @@ type SessionSnapshot struct {
 	Version   int
 	CreatedAt time.Time
 	Entries   []PersistentEntry
+	HMAC      []byte // HMAC-SHA256 signature over the serialized snapshot (excluding this field)
 }
 
 // getBootTimeUnixNano returns the approximate Unix timestamp of the system boot in nanoseconds.

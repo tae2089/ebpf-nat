@@ -59,7 +59,7 @@ func (d *GCPDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
 	ipStr := strings.TrimSpace(string(body))
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP format from GCP: %s", ipStr)
+		return nil, fmt.Errorf("invalid IP format from GCP: %s", sanitizeExternalResponse(ipStr))
 	}
 
 	return ip, nil

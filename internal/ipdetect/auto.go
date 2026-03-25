@@ -49,8 +49,16 @@ func (d *AutoDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
 
 			ip, err := detector.GetPublicIP(ctx)
 			if err == nil {
-				slog.Info("Public IP detected", 
-					slog.String("detector", detector.Name()), 
+				if verr := ValidatePublicIP(ip); verr != nil {
+					slog.Warn("Detected IP failed public IP validation, skipping to next detector",
+						slog.String("detector", detector.Name()),
+						slog.String("ip", ip.String()),
+						slog.Any("reason", verr))
+					lastErr = verr
+					break // 재시도 없이 다음 detector로
+				}
+				slog.Info("Public IP detected",
+					slog.String("detector", detector.Name()),
 					slog.String("ip", ip.String()))
 				return ip, nil
 			}

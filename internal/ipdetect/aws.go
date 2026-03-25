@@ -56,8 +56,9 @@ func (d *AWSDetector) getToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	// TrimSpace prevents CRLF injection when token is used as an HTTP header value
-	return strings.TrimSpace(string(token)), nil
+	// G-6: TrimSpace로 앞뒤 공백을 제거한 후, 허용 문자(0x20-0x7E)만 통과시켜
+	// \r\n 등의 제어 문자에 의한 HTTP 헤더 인젝션을 방지한다.
+	return sanitizeExternalResponse(strings.TrimSpace(string(token))), nil
 }
 
 func (d *AWSDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
@@ -91,7 +92,8 @@ func (d *AWSDetector) GetPublicIP(ctx context.Context) (net.IP, error) {
 	ipStr := strings.TrimSpace(string(body))
 	ip := net.ParseIP(ipStr)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP format from AWS: %s", ipStr)
+		// sanitize: 외부 응답을 그대로 로그에 포함하면 로그 인젝션이 발생할 수 있다.
+		return nil, fmt.Errorf("invalid IP format from AWS: %s", sanitizeExternalResponse(ipStr))
 	}
 
 	return ip, nil
