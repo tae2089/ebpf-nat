@@ -22,3 +22,59 @@
     - **Implemented VLAN (802.1Q/802.1AD) support in `nat.c` using dynamic header offsets.**
     - **Refactored BPF helper functions (`apply_nat`, `clamp_mss`, etc.) to support flexible packet structures.**
     - Verified all changes with `make test` and confirmed BPF Verifier compatibility.
+    - **Security Hardening (코드 리뷰 기반)**:
+      - HTTP 메트릭 서버에 Read/Write/Idle/ReadHeader Timeout 추가 (Slowloris DoS 방어)
+      - 메트릭 서버 기본 바인드 주소를 `0.0.0.0` → `127.0.0.1`로 변경 (불필요한 노출 제거)
+      - IP 감지기 HTTP 응답 본문에 `io.LimitReader` 적용 (OOM 방어)
+      - 세션 파일 디렉터리 권한 `0755` → `0700`, 파일 권한 `0644` → `0600` (최소 권한 원칙)
+      - BPF IP 헤더 IHL 필드 검증 추가 (IP 옵션 포함 패킷 정확한 파싱)
+      - BPF dead code 제거 (미사용 변수 `th`)
+    - **Security Hardening 2차 (심층 코드 리뷰)**:
+      - BPF: IHL 동적 오프셋 적용 후 `(iph2+1)` → `(data+l4_off)` 일관성 수정 (IP옵션 패킷에서 TCP 헤더 오파싱 방지)
+      - BPF: `apply_nat_icmp_error`를 IHL 동적 오프셋 기반으로 전면 리팩터링 (outer/inner IP 모두)
+      - BPF: ICMP 에러 핸들링에서 inner IP IHL 검증 추가
+      - Config: 메트릭 포트 범위 검증 (1-65535) 추가
+      - 세션 복원 시 gzip 디컴프레션 폭탄 방지 (256MB 제한)
+    - **Security Hardening 3차 (인프라 및 패킷 레벨)**:
+      - BPF: IP 프래그먼트 검증 추가 — 비첫번째 프래그먼트(frag_off≠0)는 NAT 처리 스킵 (L4 헤더 부재 시 오파싱 방지)
+      - BPF: IP total length 산정 검증 추가 (IHL보다 작은 tot_len 거부)
+      - systemd 서비스 보안 강화: NoNewPrivileges, ProtectHome, ProtectSystem=strict, PrivateTmp, ProtectKernelModules, RestrictSUIDSGID, MemoryDenyWriteExecute
+      - Config: 메트릭 포트 검증 테스트 케이스 3건 추가 (port=0, port=70000, port=9090)
+    - **Security Hardening 4차 (최종 점검)**:
+      - BPF: IP version 필드 검증 추가 (version≠4인 조작 패킷 거부)
+      - BPF: 코드 스타일 정리 (`} else if` 줄바꿈 일관성, 중복 빈 줄 제거)
+- **2026-03-26**:
+    - **코드 리뷰 기반 버그 수정 및 개선 (Iteration 1)**:
+      - **Critical: `LoadConfig` 데드락 수정** — `m.mu.Lock()` 보유 상태에서 `SetSNATConfig()`/`updatePublicIP()` 호출 시 `m.mu.RLock()` 재진입으로 데드락 발생. `setSNATConfigLocked()` 내부 메서드 도입 및 락 해제 후 외부 메서드 호출로 수정.
+      - **Critical: 포트 바이트 오더 버그 수정** — `AddSNATRule`/`AddDNATRule`에서 `htons()`로 포트를 네트워크 바이트 오더로 변환했으나, BPF는 `bpf_ntohs()`로 호스트 바이트 오더를 사용. Go 테스트는 동일하게 `htons()` 사용하여 자체 통과했으나 BPF와 상호운용 불가. `htons()` 제거하여 호스트 바이트 오더로 통일.
+      - **Race condition 수정** — `RestoreSessions`에서 `m.tcpTimeout`/`m.udpTimeout` 읽기 시 락 없이 접근. `m.mu.RLock()` 추가.
+      - **중복 duration 파싱 제거** — `main.go`와 `Manager.LoadConfig`에서 이중으로 파싱하던 TCP/UDP timeout을 Manager 내부 필드로 통합. `RunBackgroundTasks` 시그니처 단순화.
+    - **코드 리뷰 기반 버그 수정 및 개선 (Iteration 2)**:
+      - **Bug: GC ICMP reverse key 구성 오류 수정** — BPF는 ICMP 세션의 reverse key에서 `src_port`와 `dst_port` 모두 `allocated_port`로 설정하지만, GC는 TCP/UDP 패턴(`src_port=echo_id`)으로 구성하여 ICMP reverse 엔트리가 영구 누적되는 메모리 누수 발생. 프로토콜별 분기 추가.
+      - **테스트 추가** — `TestGarbageCollector_ICMPReverseKey` 테스트로 ICMP 세션의 forward/reverse 엔트리가 모두 정상 삭제되는지 검증.
+      - **Code quality: scraper.go 매직 넘버 제거** — BPF action 상수(0~4)를 명명된 상수(`actionTranslated`, `actionAllocFail` 등)로 교체, if-else 체인을 switch로 개선.
+    - **코드 리뷰 기반 버그 수정 및 개선 (Iteration 3)**:
+      - **Bug: ICMP 에러 NAT에서 체크섬 손상 수정** — `apply_nat_icmp_error`에서 inner IP saddr 변경과 inner IP checksum 변경은 one's complement 산술로 상쇄되는데, 코드가 saddr 변경분을 ICMP 체크섬에 중복 반영하여 체크섬을 손상시킴. 불필요한 `bpf_l4_csum_replace` 호출 제거. 또한 포트 변경 조건을 `old != 0`에서 `old != new`로 수정하여 정확성 향상.
+      - **성능: `SaveSessions` 락 범위 축소** — 맵 이터레이션에만 RLock을 보유하고, 파일 I/O(gzip 압축, sync, rename) 전에 해제. 대용량 세션 저장 시 다른 작업(IP 갱신, GC)의 지연 방지.
+      - **정확성: `AddSNATRule`/`AddDNATRule` nil IP 검증** — `net.ParseIP` 실패 시 nil IP가 `ipToUint32`에 의해 0.0.0.0으로 변환되어 와일드카드 규칙이 생성되는 문제 방지. `transIP` nil 체크 추가.
+      - **Race condition: `RestoreSessions`의 `batchUpdateSize` 락 보호** — 락 없이 접근하던 `m.batchUpdateSize`를 `m.mu.RLock()` 스코프 내에서 읽기.
+      - **Code quality: `RestoreSessions` double close 제거** — `gzip.NewReader` 실패 시 불필요한 `f.Close()` 호출 제거 (defer로 이미 처리).
+    - **코드 리뷰 기반 버그 수정 및 개선 (Iteration 4)**:
+      - **검증 강화: ExternalIP IPv4 필수 검증** — `Config.Validate()`에서 IPv6 ExternalIP를 거부. NAT은 IPv4만 지원하므로 IPv6 주소 입력 시 조기 에러 반환.
+      - **검증 강화: Rule.TransIP 필수 및 IPv4 검증** — SNAT/DNAT 규칙에서 TransIP 비어있으면 에러. IPv6 TransIP도 거부. 빈 TransIP가 `net.ParseIP("")` → nil → `ipToUint32` → 0.0.0.0 와일드카드로 변환되던 경로 차단.
+      - **BPF: ICMP echo 체크섬 헬퍼 일관성** — `apply_nat`의 ICMP echo 경로에서 직접 `bpf_l3_csum_replace` 호출을 `update_ip_csum` 헬퍼로 교체하여 TCP/UDP와 일관성 확보.
+      - **테스트 추가** — IPv6 ExternalIP 거부, DNAT 규칙 TransIP 필수, 유효한 DNAT 규칙, IPv6 TransIP 거부 테스트 4건. 전체 config 테스트 15건 PASS.
+    - **코드 리뷰 기반 버그 수정 및 개선 (Iteration 5, 최종)**:
+      - **Bug: Duration 0/음수 검증 부재 → `time.NewTicker(0)` 패닉** — `Config.Validate()`에서 duration 문자열의 파싱만 확인하고 양수 여부를 검증하지 않아, `--gc-interval "0s"` 등 입력 시 런타임 패닉 발생. 양수 검증 추가.
+      - **이식성: `binary.LittleEndian` → `binary.NativeEndian`** — `ipToUint32`와 서브넷 마스크 변환에서 `binary.LittleEndian` 하드코딩을 `binary.NativeEndian`(Go 1.21+)으로 교체. eBPF 맵은 호스트 네이티브 엔디안으로 값을 저장하므로, 빅엔디안 호스트에서도 정확하게 동작. manager.go, integration_test.go, map_test.go 모두 적용.
+      - **테스트 추가** — 0 duration 거부, 음수 duration 거부 테스트 2건. 전체 config 테스트 17건 PASS.
+    - **Docker 기반 테스트 및 BPF Verifier 수정**:
+      - **BPF Verifier 에러 수정** — 보안 강화 시 도입된 동적 IHL 기반 `l4_off = l3_off + ihl*4` 계산이 BPF verifier의 패킷 오프셋 추적을 깨뜨림. `ihl != 5`인 패킷(IP 옵션 포함)은 조기 반환하고, 표준 패킷은 고정 오프셋(`l3_off + sizeof(struct iphdr)`)을 사용하도록 복원. IHL 유효성 검증, IP 프래그먼트 검증, IP version 검증 등 보안 체크는 유지.
+      - **`apply_nat_icmp_error` 원본 오프셋 복원** — 동적 inner IHL 계산도 verifier 호환 문제가 있어 원본의 고정 오프셋(`l3_off + 48` 등)으로 복원. ICMP 체크섬 상쇄 로직(iteration 3 수정)은 유지.
+      - **전체 테스트 통과** — `make test`로 config(17건), ipdetect(4건), metrics(3건), nat(17건) 전체 41건 테스트 PASS. BPF verifier, 단위 테스트, 통합 테스트(TCP/UDP/ICMP/Persistence/AntiSpoofing/PMTU) 모두 성공.
+    - **코드 리뷰 기반 버그 수정 및 테스트 보완 (새 세션, Ralph Loop Iteration 1)**:
+      - **Bug: GC uint64 언더플로 수정** — `gc.go:88`에서 `entry.LastSeen > now`일 때 `now - entry.LastSeen`이 uint64 언더플로로 매우 큰 값이 되어 모든 세션이 만료 처리됨. `entry.LastSeen > now` 시 `continue`로 건너뛰는 보호 코드 추가. 클락 스큐/재부팅 후 ktime 리셋 시나리오에서 세션 전체 삭제 방지.
+      - **개선: 타임아웃 파싱 실패 경고 로그 추가** — `manager.go`에서 `cfg.TCPTimeout`/`cfg.UDPTimeout` 파싱 실패 시 조용히 기본값 사용. `slog.Warn`으로 경고 로그 추가.
+      - **검증 강화: MaxSessions 하한값 추가** — `config.go`에서 `MaxSessions`가 0이 아닌데 8 미만이면 에러 반환. BPF LRU 맵의 최소 유효 크기 보장.
+      - **BPF: QinQ 주석 개선** — QinQ inner 태그 스트리핑을 구현했으나 BPF verifier 복잡도 제한(1M insn)에 근접하여 제거. 단일 레이어 지원임을 주석으로 명시.
+      - **테스트 추가** — `TestGarbageCollector_ClockSkewProtection`(미래 타임스탬프 보호), `MaxSessions` 검증 3건 추가. 전체 테스트(config 20건, nat 18건 포함) PASS.
