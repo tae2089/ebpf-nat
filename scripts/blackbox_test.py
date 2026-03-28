@@ -351,7 +351,21 @@ sys.stdout.write(addr[0] + "\\n" + str(received) + "\\n"); sys.stdout.flush()
     if not _wait_server_ready(srv):
         record("TC-04 Large TCP (1MB)", False, "server not ready")
         return
-    ok, err = tcp_client(port, b"X" * size, timeout=15)
+    # 1MB 데이터를 커맨드 라인 인자로 넘기면 ARG_MAX 초과 → 클라이언트 스크립트 내부에서 생성
+    cli_code = (
+        f"import socket\n"
+        f"s = socket.socket()\n"
+        f"s.settimeout(15)\n"
+        f"s.connect(('{SERVER_IP}', {port}))\n"
+        f"s.sendall(b'X' * {size})\n"
+        f"s.close()\n"
+    )
+    r = subprocess.run(
+        ["ip", "netns", "exec", INTERNAL_NS, "python3", "-c", cli_code],
+        capture_output=True, text=True, timeout=20,
+    )
+    ok = r.returncode == 0
+    err = r.stderr.strip()
     stdout, _ = _communicate(srv, timeout=20)
     pairs = _parse_pairs(stdout)
     if not ok:
@@ -604,7 +618,7 @@ def test_port_exhaustion() -> None:
          "--udp-timeout",      "30s",
          "--max-sessions",     str(MAX_SESSIONS),
          "--metrics-enabled",
-         "--metrics-address",  "0.0.0.0",
+         "--metrics-address",  "127.0.0.1",
          "--metrics-port",     str(METRICS_PORT)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
