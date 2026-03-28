@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package main
 
@@ -67,6 +66,13 @@ func init() {
 }
 
 func run() {
+	// 환경변수 오버라이드를 먼저 적용한다 (cfg.Validate 이전에 적용해야 올바른 검증이 가능).
+	// EBPF_NAT_METRICS_TOKEN은 CLI 플래그보다 우선하므로 Validate 이전에 설정해야
+	// 비-localhost 주소에서 토큰 없음 오류를 피할 수 있다.
+	if envToken := os.Getenv("EBPF_NAT_METRICS_TOKEN"); envToken != "" {
+		cfg.Metrics.BearerToken = envToken
+	}
+
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		slog.Error("Configuration validation failed", slog.Any("error", err))
@@ -140,29 +146,20 @@ func run() {
 	var wg sync.WaitGroup
 
 	if debug {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			bpf.StartTracePipeLogger(ctx)
-		}()
+		})
 	}
 
 	// Start background tasks
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		natMgr.RunBackgroundTasks(ctx, ipDetectInterval, gcInterval)
-	}()
+	})
 
 	// Start metrics server if enabled
 	if cfg.Metrics.Enabled {
 		metrics.NewScraper(&objs, natMgr, prometheus.DefaultRegisterer)
 		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Address, cfg.Metrics.Port)
-
-		// 환경변수에서 Bearer Token 로드 (CLI 플래그보다 우선)
-		if envToken := os.Getenv("EBPF_NAT_METRICS_TOKEN"); envToken != "" {
-			cfg.Metrics.BearerToken = envToken
-		}
 
 		mux := http.NewServeMux()
 		metricsHandler := promhttp.Handler()
@@ -177,18 +174,14 @@ func run() {
 			ReadHeaderTimeout: 5 * time.Second,
 		}
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			slog.Info("Starting metrics server", slog.String("addr", addr))
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("Metrics server failed", slog.Any("error", err))
 			}
-		}()
+		})
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-ctx.Done()
 			slog.Info("Shutting down metrics server")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -196,7 +189,7 @@ func run() {
 			if err := server.Shutdown(shutdownCtx); err != nil {
 				slog.Error("Failed to shutdown metrics server", slog.Any("error", err))
 			}
-		}()
+		})
 	}
 
 	// Find the network interface

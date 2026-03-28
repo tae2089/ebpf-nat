@@ -82,3 +82,58 @@ func TestBearerTokenMiddleware(t *testing.T) {
 		})
 	}
 }
+
+// TestBearerTokenMiddleware_WWWAuthenticate: RFC 7235 준수 검증
+// 401 응답에 WWW-Authenticate 헤더가 포함되어야 한다.
+func TestBearerTokenMiddleware_WWWAuthenticate(t *testing.T) {
+	innerHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := BearerTokenMiddleware("secrettoken", innerHandler)
+
+	tests := []struct {
+		name          string
+		requestHeader string
+		expectHeader  bool
+	}{
+		{
+			name:          "Authorization 헤더 없을 때 WWW-Authenticate 포함",
+			requestHeader: "",
+			expectHeader:  true,
+		},
+		{
+			name:          "잘못된 Bearer Token일 때 WWW-Authenticate 포함",
+			requestHeader: "Bearer wrongtoken",
+			expectHeader:  true,
+		},
+		{
+			name:          "올바른 Bearer Token일 때 WWW-Authenticate 없음",
+			requestHeader: "Bearer secrettoken",
+			expectHeader:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			if tt.requestHeader != "" {
+				req.Header.Set("Authorization", tt.requestHeader)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			wwwAuth := rec.Header().Get("WWW-Authenticate")
+			if tt.expectHeader {
+				if wwwAuth == "" {
+					t.Errorf("expected WWW-Authenticate header in 401 response, got none")
+				} else if wwwAuth != `Bearer realm="ebpf-nat"` {
+					t.Errorf("WWW-Authenticate = %q, want %q", wwwAuth, `Bearer realm="ebpf-nat"`)
+				}
+			} else {
+				if wwwAuth != "" {
+					t.Errorf("expected no WWW-Authenticate header in 200 response, got %q", wwwAuth)
+				}
+			}
+		})
+	}
+}

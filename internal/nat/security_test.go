@@ -68,6 +68,28 @@ func TestInternalMask_NativeEndian(t *testing.T) {
 	}
 }
 
+// TestUint32ToIPStr_RoundTrip: uint32ToIPStr가 ipToUint32의 역함수인지 검증
+// ipToUint32는 NativeEndian으로 IP를 저장하므로, uint32ToIPStr도 NativeEndian으로 복원해야 한다.
+// 이 테스트가 실패하면 보안 로그(per-source 세션 경고)에 IP가 역전되어 표시된다.
+func TestUint32ToIPStr_RoundTrip(t *testing.T) {
+	ipStrs := []string{"192.168.1.10", "10.0.0.1", "1.2.3.4", "8.8.8.8", "255.255.255.0"}
+
+	for _, ipStr := range ipStrs {
+		t.Run(ipStr, func(t *testing.T) {
+			ip := net.ParseIP(ipStr)
+			if ip == nil {
+				t.Fatalf("failed to parse IP: %s", ipStr)
+			}
+			encoded := ipToUint32(ip)
+			decoded := uint32ToIPStr(encoded)
+			if decoded != ipStr {
+				t.Errorf("round-trip failed: ipToUint32(%s)=0x%08X -> uint32ToIPStr==%s, want %s",
+					ipStr, encoded, decoded, ipStr)
+			}
+		})
+	}
+}
+
 // TestRestoreSessions_FutureTimestampSkipped: G-2
 // entry.LastSeenUnix > nowUnix 인 경우(시계 역행/파일 복사)
 // 세션이 건너뛰어져야 한다 (만료된 것으로 처리).

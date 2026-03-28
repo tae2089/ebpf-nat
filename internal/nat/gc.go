@@ -2,6 +2,7 @@ package nat
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -101,10 +102,31 @@ func (gc *GarbageCollector) RunOnce(ctx context.Context, now uint64) error {
 	return nil
 }
 
-// uint32ToIPStr는 uint32 IP를 점 표기법 문자열로 변환한다 (BigEndian 기준).
+// uint32ToIPStr는 uint32 IP를 점 표기법 문자열로 변환한다.
+// ipToUint32와 동일하게 NativeEndian을 사용해야 한다.
+// BPF는 iph->saddr를 호스트 바이트 순서(x86에서 LittleEndian)로 읽으므로
+// Go 측도 NativeEndian으로 저장/복원해야 정확한 IP 문자열을 얻는다.
 func uint32ToIPStr(ip uint32) string {
-	return fmt.Sprintf("%d.%d.%d.%d",
-		byte(ip>>24), byte(ip>>16), byte(ip>>8), byte(ip))
+	b := make([]byte, 4)
+	binary.NativeEndian.PutUint32(b, ip)
+	return fmt.Sprintf("%d.%d.%d.%d", b[0], b[1], b[2], b[3])
+}
+
+// sessionTimeout returns the idle timeout for a NAT session based on its state and protocol.
+// It covers NatStateClosing, TCP, UDP, and ICMP (fallback to udpTimeout).
+// It does NOT handle the SYN-SENT (half-open) case; callers must check that separately.
+func (gc *GarbageCollector) sessionTimeout(key bpf.NatNatKey, entry bpf.NatNatEntry) time.Duration {
+	if entry.State == NatStateClosing {
+		return gc.tcpClosingTimeout
+	}
+	switch key.Protocol {
+	case syscall.IPPROTO_TCP:
+		return gc.tcpTimeout
+	case syscall.IPPROTO_UDP:
+		return gc.udpTimeout
+	default:
+		return gc.udpTimeout
+	}
 }
 
 func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) ([]bpf.NatNatKey, []bpf.NatNatKey, map[uint32]int, error) {
@@ -140,9 +162,7 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 			}
 
 			var timeout time.Duration
-			if entry.State == NatStateClosing {
-				timeout = gc.tcpClosingTimeout
-			} else if key.Protocol == syscall.IPPROTO_TCP && entry.State == NatStateActive && gc.objects.ReverseNatMap != nil {
+			if key.Protocol == syscall.IPPROTO_TCP && entry.State == NatStateActive && gc.objects.ReverseNatMap != nil {
 				// TCP ACTIVE 상태인데 reverse_nat_map에 엔트리가 없으면 SYN-SENT(half-open)로 간주한다.
 				// 이 경우 tcpSynSentTimeout(기본 75초)을 적용하여 포트 점유를 방지한다.
 				revKey := bpf.NatNatKey{
@@ -160,17 +180,11 @@ func (gc *GarbageCollector) collectExpiredKeys(ctx context.Context, now uint64) 
 						slog.Any("key", key),
 						slog.Duration("timeout", timeout))
 				} else {
-					timeout = gc.tcpTimeout
+					timeout = gc.sessionTimeout(key, entry)
 				}
 			} else {
-				switch key.Protocol {
-				case syscall.IPPROTO_TCP:
-					timeout = gc.tcpTimeout
-				case syscall.IPPROTO_UDP:
-					timeout = gc.udpTimeout
-				default:
-					timeout = gc.udpTimeout
-				}
+				// NatStateClosing, UDP, ICMP, 또는 reverse map 없는 TCP
+				timeout = gc.sessionTimeout(key, entry)
 			}
 
 			// Guard against uint64 underflow: clock skew or stale timestamps
@@ -238,19 +252,7 @@ func (gc *GarbageCollector) collectExpiredReverseKeys(ctx context.Context, now u
 			key := keys[i]
 			entry := values[i]
 
-			var timeout time.Duration
-			if entry.State == NatStateClosing {
-				timeout = gc.tcpClosingTimeout
-			} else {
-				switch key.Protocol {
-				case syscall.IPPROTO_TCP:
-					timeout = gc.tcpTimeout
-				case syscall.IPPROTO_UDP:
-					timeout = gc.udpTimeout
-				default:
-					timeout = gc.udpTimeout
-				}
-			}
+			timeout := gc.sessionTimeout(key, entry)
 
 			if entry.LastSeen > now {
 				continue

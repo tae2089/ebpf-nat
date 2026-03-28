@@ -24,6 +24,7 @@ func BearerTokenMiddleware(token string, next http.Handler) http.Handler {
 		// Authorization 헤더에서 Bearer 토큰 추출
 		authHeader := r.Header.Get("Authorization")
 		if !strings.HasPrefix(authHeader, "Bearer ") {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="ebpf-nat"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -32,6 +33,7 @@ func BearerTokenMiddleware(token string, next http.Handler) http.Handler {
 
 		// 상수 시간 비교로 타이밍 공격 방어
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="ebpf-nat"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}

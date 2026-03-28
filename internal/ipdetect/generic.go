@@ -54,11 +54,6 @@ func ValidatePublicIP(ip net.IP) error {
 	return nil
 }
 
-// validatePublicIP는 패키지 내부 테스트에서 사용하는 alias.
-func validatePublicIP(ip net.IP) error {
-	return ValidatePublicIP(ip)
-}
-
 // sanitizeExternalResponse는 외부 서비스 응답을 로그에 포함하기 안전하게 정제한다.
 // 로그 인젝션 방어를 위해 다음을 수행한다:
 //  1. 허용 문자(0x20-0x7E, ASCII 출력 가능 문자)만 통과시킨다.

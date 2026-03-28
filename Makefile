@@ -42,6 +42,15 @@ integration-test: generate
 		-v $(shell pwd):/app -w /app $(BUILDER_IMAGE) \
 		go test -v ./internal/nat -run TestNATConnectivity
 
+python-test: generate
+	mkdir -p $(GOMODCACHE) $(GOCACHE)
+	docker run --rm --privileged \
+		-v /sys/kernel/debug:/sys/kernel/debug \
+		-v $(GOMODCACHE):/go/pkg/mod \
+		-v $(GOCACHE):/root/.cache/go-build \
+		-v $(shell pwd):/app -w /app $(BUILDER_IMAGE) \
+		sh -c "GOOS=linux GOARCH=amd64 go build -o bin/ebpf-nat-amd64 main.go && python3 scripts/blackbox_test.py"
+
 clean:
 	rm -rf bin/
 	rm -f $(BPF_GEN_DIR)/*.go

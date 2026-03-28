@@ -37,10 +37,7 @@ func TestNamespaceCreation(t *testing.T) {
 	}
 	defer originalNS.Close()
 
-	env := &TestEnv{
-		InternalNSName: "ns-int-test",
-		ExternalNSName: "ns-ext-test",
-	}
+	env := &TestEnv{}
 
 	if err := env.Setup(nil); err != nil {
 		t.Fatalf("Failed to setup test environment: %v", err)
@@ -77,10 +74,7 @@ func TestNATConnectivity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &TestEnv{
-		InternalNSName: "ns-int-conn",
-		ExternalNSName: "ns-ext-conn",
-	}
+	env := &TestEnv{}
 	if err := env.Setup(&objs); err != nil {
 		t.Fatalf("Failed to setup test environment: %v", err)
 	}
@@ -147,6 +141,7 @@ func TestNATConnectivity(t *testing.T) {
 	t.Run("TCP", func(t *testing.T) {
 		serverAddr := "10.0.0.10:8080"
 		receivedChan := make(chan string, 1)
+		readyChan := make(chan struct{})
 
 		// Start server in External NS
 		go func() {
@@ -156,6 +151,8 @@ func TestNATConnectivity(t *testing.T) {
 					return err
 				}
 				defer l.Close()
+
+				close(readyChan)
 
 				// Set timeout for accept
 				l.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
@@ -182,7 +179,7 @@ func TestNATConnectivity(t *testing.T) {
 			}
 		}()
 
-		time.Sleep(500 * time.Millisecond)
+		<-readyChan
 
 		// Connect from Internal NS
 		err := env.runInNS(env.internalNS, func() error {
@@ -212,6 +209,7 @@ func TestNATConnectivity(t *testing.T) {
 	t.Run("UDP", func(t *testing.T) {
 		serverAddr := "10.0.0.10:9090"
 		receivedChan := make(chan string, 1)
+		readyChan := make(chan struct{})
 
 		// Start server in External NS
 		go func() {
@@ -225,6 +223,8 @@ func TestNATConnectivity(t *testing.T) {
 					return err
 				}
 				defer conn.Close()
+
+				close(readyChan)
 
 				conn.SetDeadline(time.Now().Add(5 * time.Second))
 
@@ -247,7 +247,7 @@ func TestNATConnectivity(t *testing.T) {
 			}
 		}()
 
-		time.Sleep(500 * time.Millisecond)
+		<-readyChan
 
 		// Send from Internal NS
 		err := env.runInNS(env.internalNS, func() error {
@@ -309,34 +309,41 @@ func TestNATConnectivity(t *testing.T) {
 
 	// 4. Metrics Verification Test
 	t.Run("Metrics", func(t *testing.T) {
-		// Wait a bit for all packets to be processed and metrics updated
-		time.Sleep(500 * time.Millisecond)
-
+		// BPF map 업데이트는 비동기이므로 데이터가 나타날 때까지 폴링한다.
+		deadline := time.Now().Add(3 * time.Second)
 		var foundTCP, foundUDP bool
-		var key bpf.NatMetricsKey
-		var values []bpf.NatMetricsValue
-		iter := objs.MetricsMap.Iterate()
+		for time.Now().Before(deadline) && (!foundTCP || !foundUDP) {
+			foundTCP, foundUDP = false, false
+			var key bpf.NatMetricsKey
+			var values []bpf.NatMetricsValue
+			iter := objs.MetricsMap.Iterate()
 
-		for iter.Next(&key, &values) {
-			var totalPackets uint64
-			for _, v := range values {
-				totalPackets += v.Packets
+			for iter.Next(&key, &values) {
+				var totalPackets uint64
+				for _, v := range values {
+					totalPackets += v.Packets
+				}
+
+				if totalPackets > 0 {
+					if key.Protocol == syscall.IPPROTO_TCP && key.Action == 0 { // Translated
+						foundTCP = true
+						t.Logf("Found TCP metrics: %d packets", totalPackets)
+					}
+					if key.Protocol == syscall.IPPROTO_UDP && key.Action == 0 { // Translated
+						foundUDP = true
+						t.Logf("Found UDP metrics: %d packets", totalPackets)
+					}
+				}
 			}
 
-			if totalPackets > 0 {
-				if key.Protocol == syscall.IPPROTO_TCP && key.Action == 0 { // Translated
-					foundTCP = true
-					t.Logf("Found TCP metrics: %d packets", totalPackets)
-				}
-				if key.Protocol == syscall.IPPROTO_UDP && key.Action == 0 { // Translated
-					foundUDP = true
-					t.Logf("Found UDP metrics: %d packets", totalPackets)
-				}
+			if err := iter.Err(); err != nil {
+				t.Errorf("Failed to iterate metrics map: %v", err)
+				break
 			}
-		}
 
-		if err := iter.Err(); err != nil {
-			t.Errorf("Failed to iterate metrics map: %v", err)
+			if !foundTCP || !foundUDP {
+				time.Sleep(50 * time.Millisecond)
+			}
 		}
 
 		if !foundTCP {
@@ -453,6 +460,4 @@ func TestNATConnectivity(t *testing.T) {
 		}, 0)
 	})
 
-	// Give some time for BPF logs
-	time.Sleep(200 * time.Millisecond)
 }

@@ -138,9 +138,9 @@ func TestValidatePublicIP(t *testing.T) {
 			if ip == nil {
 				t.Fatalf("failed to parse IP: %s", tt.ipStr)
 			}
-			err := validatePublicIP(ip)
+			err := ValidatePublicIP(ip)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("validatePublicIP(%s) error = %v, wantErr %v", tt.ipStr, err, tt.wantErr)
+				t.Errorf("ValidatePublicIP(%s) error = %v, wantErr %v", tt.ipStr, err, tt.wantErr)
 			}
 		})
 	}

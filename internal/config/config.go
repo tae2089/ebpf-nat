@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -21,7 +22,8 @@ type Config struct {
 	SessionFile     string // path to save/restore sessions
 	// RestorationFailureThreshold: 세션 복원 실패율 임계값 (0.0~1.0, 기본값 0.5)
 	// 복원 실패율이 이 값을 초과하면 경고를 출력한다.
-	// 0.0: 실패 즉시 에러, 1.0: 모든 실패 무시
+	// 0.0: Go zero value로 "미설정" 처리 → LoadConfig에서 기본값 0.5 사용
+	// 최소 유효값은 0.01 이상 (즉시 에러를 원하면 0.01 설정), 1.0: 모든 실패 무시
 	RestorationFailureThreshold float64
 	// MaxSessionsPerSource: 단일 소스 IP의 최대 세션 수 (0=비활성)
 	MaxSessionsPerSource uint32
@@ -106,9 +108,11 @@ func (c *Config) Validate() error {
 
 	// 메트릭이 활성화되고 비-localhost 주소에 바인딩하는데 토큰이 없으면 에러
 	// 토큰 없이 공개 주소에 메트릭을 노출하면 무인증으로 접근 가능해 보안 취약점이 된다.
-	if c.Metrics.Enabled && c.Metrics.BearerToken == "" && c.Metrics.Address != "" {
-		if !isLocalhostAddress(c.Metrics.Address) {
-			return fmt.Errorf("metrics address %q is not localhost; bearer token required for security", c.Metrics.Address)
+	// 빈 주소("")는 0.0.0.0으로 바인딩되므로 localhost가 아닌 것으로 간주한다.
+	if c.Metrics.Enabled && c.Metrics.BearerToken == "" {
+		addr := c.Metrics.Address
+		if addr == "" || !isLocalhostAddress(addr) {
+			return fmt.Errorf("metrics address %q is not localhost; bearer token required for security", addr)
 		}
 	}
 
@@ -145,11 +149,13 @@ type Rule struct {
 }
 
 // isLocalhostAddress는 주소 문자열이 localhost 계열인지 확인한다.
-// 127.0.0.1, ::1, localhost를 localhost로 간주한다.
+// "localhost" 문자열 또는 net.IP.IsLoopback()이 true인 주소(127.0.0.0/8, ::1 등)를 localhost로 간주한다.
 func isLocalhostAddress(addr string) bool {
-	switch addr {
-	case "127.0.0.1", "::1", "localhost":
+	if addr == "localhost" {
 		return true
+	}
+	if ip := net.ParseIP(addr); ip != nil {
+		return ip.IsLoopback()
 	}
 	return false
 }
@@ -196,7 +202,7 @@ func (r *Rule) Validate() error {
 	if err := validateTranslationIP(transIP); err != nil {
 		return fmt.Errorf("invalid trans-ip: %w", err)
 	}
-	if r.Protocol != "tcp" && r.Protocol != "udp" && r.Protocol != "TCP" && r.Protocol != "UDP" {
+	if !strings.EqualFold(r.Protocol, "tcp") && !strings.EqualFold(r.Protocol, "udp") {
 		return fmt.Errorf("invalid protocol: %s (must be tcp or udp)", r.Protocol)
 	}
 	return nil

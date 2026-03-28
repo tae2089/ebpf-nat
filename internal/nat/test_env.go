@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package nat
 
@@ -17,9 +16,6 @@ import (
 )
 
 type TestEnv struct {
-	InternalNSName string
-	ExternalNSName string
-
 	internalNS netns.NsHandle
 	externalNS netns.NsHandle
 	rootNS     netns.NsHandle
@@ -40,13 +36,17 @@ func (e *TestEnv) Setup(objs *bpf.NatObjects) error {
 	if err != nil {
 		return fmt.Errorf("failed to create internal ns: %w", err)
 	}
-	netns.Set(e.rootNS)
+	if err := netns.Set(e.rootNS); err != nil {
+		return fmt.Errorf("failed to restore root ns after internal ns creation: %w", err)
+	}
 
 	e.externalNS, err = netns.New()
 	if err != nil {
 		return fmt.Errorf("failed to create external ns: %w", err)
 	}
-	netns.Set(e.rootNS)
+	if err := netns.Set(e.rootNS); err != nil {
+		return fmt.Errorf("failed to restore root ns after external ns creation: %w", err)
+	}
 
 	// 2. Setup Connectivity
 	// Internal IP: 192.168.1.10 -> GW: 192.168.1.1
@@ -184,8 +184,14 @@ func (e *TestEnv) setupVeth(rootName, peerName string, peerNS netns.NsHandle, ro
 		return err
 	}
 
-	rootLink, _ := netlink.LinkByName(rootName)
-	addr, _ := netlink.ParseAddr(rootIP)
+	rootLink, err := netlink.LinkByName(rootName)
+	if err != nil {
+		return fmt.Errorf("failed to find root link %s: %w", rootName, err)
+	}
+	addr, err := netlink.ParseAddr(rootIP)
+	if err != nil {
+		return fmt.Errorf("failed to parse root IP %s: %w", rootIP, err)
+	}
 	if err := netlink.AddrAdd(rootLink, addr); err != nil {
 		return err
 	}
@@ -193,7 +199,10 @@ func (e *TestEnv) setupVeth(rootName, peerName string, peerNS netns.NsHandle, ro
 		return err
 	}
 
-	peerLink, _ := netlink.LinkByName(peerName)
+	peerLink, err := netlink.LinkByName(peerName)
+	if err != nil {
+		return fmt.Errorf("failed to find peer link %s: %w", peerName, err)
+	}
 	if err := netlink.LinkSetNsFd(peerLink, int(peerNS)); err != nil {
 		return err
 	}
@@ -203,7 +212,10 @@ func (e *TestEnv) setupVeth(rootName, peerName string, peerNS netns.NsHandle, ro
 		if err != nil {
 			return err
 		}
-		addr, _ := netlink.ParseAddr(peerIP)
+		addr, err := netlink.ParseAddr(peerIP)
+		if err != nil {
+			return fmt.Errorf("failed to parse peer IP %s: %w", peerIP, err)
+		}
 		if err := netlink.AddrAdd(link, addr); err != nil {
 			return err
 		}

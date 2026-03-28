@@ -119,6 +119,8 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 	}
 
 	// RestorationFailureThreshold: 0.0~1.0 범위 (기본 0.5)
+	// 0.0은 Go zero value로 "미설정"을 의미하므로 기본값(0.5)을 유지한다.
+	// 매우 엄격한 임계값을 원하면 0.01 이상의 값을 사용한다.
 	if cfg.RestorationFailureThreshold > 0 {
 		m.restorationFailureThreshold = cfg.RestorationFailureThreshold
 	}
@@ -660,8 +662,6 @@ func (m *Manager) RestoreSessions(path string) error {
 				failureRate*100, threshold*100, failures, totalEntries)
 		}
 	}
-	_ = totalRestored // suppress unused variable warning if no failures
-
 	return nil
 }
 

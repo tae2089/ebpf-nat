@@ -108,6 +108,7 @@ func TestConfig_Validate(t *testing.T) {
 				Metrics: MetricsConfig{
 					Enabled: true,
 					Port:    9090,
+					Address: "127.0.0.1",
 				},
 			},
 			wantErr: false,
@@ -507,7 +508,7 @@ func TestRestorationFailureThreshold(t *testing.T) {
 		wantErr   bool
 	}{
 		{name: "기본값 0.5 허용", threshold: 0.5, wantErr: false},
-		{name: "0.0 (실패 즉시 에러) 허용", threshold: 0.0, wantErr: false},
+		{name: "0.0 (미설정 = 기본값 0.5 사용) 허용", threshold: 0.0, wantErr: false},
 		{name: "1.0 (모두 실패해도 무시) 허용", threshold: 1.0, wantErr: false},
 		{name: "음수 거부", threshold: -0.1, wantErr: true},
 		{name: "1.0 초과 거부", threshold: 1.1, wantErr: true},
@@ -523,6 +524,120 @@ func TestRestorationFailureThreshold(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Config.Validate() with threshold=%.2f error = %v, wantErr %v",
 					tt.threshold, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidate_MetricsEmptyAddressRequiresToken: 빈 메트릭 주소 보안 검증
+// Address가 빈 문자열("")이면 0.0.0.0으로 바인딩되어 모든 인터페이스에 노출된다.
+// 이 경우 Bearer Token이 없으면 보안 취약점이 되므로 에러를 반환해야 한다.
+func TestValidate_MetricsEmptyAddressRequiresToken(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name: "빈 주소 + 토큰 없음 → 에러 (0.0.0.0 바인딩으로 처리)",
+			cfg: Config{
+				Interface: "eth0",
+				Metrics: MetricsConfig{
+					Enabled: true,
+					Port:    9090,
+					Address: "",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "빈 주소 + 토큰 있음 → 허용",
+			cfg: Config{
+				Interface: "eth0",
+				Metrics: MetricsConfig{
+					Enabled:     true,
+					Port:        9090,
+					Address:     "",
+					BearerToken: "secrettoken",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "127.0.0.1 + 토큰 없음 → 허용 (명시적 localhost)",
+			cfg: Config{
+				Interface: "eth0",
+				Metrics: MetricsConfig{
+					Enabled: true,
+					Port:    9090,
+					Address: "127.0.0.1",
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Config.Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestIsLocalhostAddress_FullLoopbackRange: isLocalhostAddress가 127.0.0.0/8 전체를 처리하는지 검증
+func TestIsLocalhostAddress_FullLoopbackRange(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"127.0.0.2", true},
+		{"127.1.0.0", true},
+		{"127.255.255.255", true},
+		{"::1", true},
+		{"localhost", true},
+		{"0.0.0.0", false},
+		{"192.168.1.1", false},
+		{"8.8.8.8", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			got := isLocalhostAddress(tt.addr)
+			if got != tt.want {
+				t.Errorf("isLocalhostAddress(%q) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRule_Validate_ProtocolCaseInsensitive: Rule.Validate()가 대소문자 무관 프로토콜을 허용하는지 검증
+func TestRule_Validate_ProtocolCaseInsensitive(t *testing.T) {
+	tests := []struct {
+		protocol string
+		wantErr  bool
+	}{
+		{"tcp", false},
+		{"TCP", false},
+		{"Tcp", false},
+		{"udp", false},
+		{"UDP", false},
+		{"Udp", false},
+		{"icmp", true},
+		{"invalid", true},
+		{"", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.protocol, func(t *testing.T) {
+			r := Rule{Protocol: tt.protocol, TransIP: "192.168.1.100"}
+			err := r.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Rule.Validate() with Protocol=%q error = %v, wantErr %v", tt.protocol, err, tt.wantErr)
 			}
 		})
 	}
