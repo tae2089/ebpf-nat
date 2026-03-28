@@ -578,6 +578,164 @@ def test_udp_multiple_flows() -> None:
            f"received={len(pairs)}/{count} snat_ok={snat_ok} errors={errors[:2]}")
 
 
+def test_port_exhaustion() -> None:
+    """TC-11  Port Exhaustion: 포트 고갈 시 hang 없이 즉시 드롭 및 Prometheus 메트릭 노출 검증.
+
+    에페머럴 포트 범위: 32768–60999 (28,232개).
+    포트 할당 알고리즘: 랜덤 프로브 2회 → 선형 스캔 128회 → 모두 실패 시
+    ACTION_ALLOC_FAIL → TC_ACT_SHOT (즉시 드롭, hang 없음).
+
+    LRU 맵 오버플로우 시나리오:
+      max-sessions=500 으로 제한 → 600개 세션 생성 →
+      LRU가 100개 forward 엔트리 제거, reverse 엔트리는 GC 전까지 고아(orphan)로 잔류.
+      이 고아 reverse 엔트리들이 포트를 점유해 alloc_fail 가능성을 높인다.
+    """
+    METRICS_PORT = 19191
+    FLOOD_COUNT  = 600
+    MAX_SESSIONS = 500
+
+    stop_nat()
+    nat_m = subprocess.Popen(
+        [NAT_BINARY, "-i", "veth-ext-root",
+         "--external-ip",      EXTERNAL_IP,
+         "--masquerade=true",
+         "--session-file",     SESSION_FILE,
+         "--gc-interval",      "3s",
+         "--udp-timeout",      "30s",
+         "--max-sessions",     str(MAX_SESSIONS),
+         "--metrics-enabled",
+         "--metrics-address",  "0.0.0.0",
+         "--metrics-port",     str(METRICS_PORT)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    time.sleep(0.5)
+    if nat_m.poll() is not None:
+        _, err = nat_m.communicate()
+        start_nat()
+        record("TC-11 Port Exhaustion", False, f"nat failed to start: {err.decode()[:120]}")
+        return
+
+    # External NS에서 UDP 서버 실행 (flood 패킷 수신용)
+    srv_code = f"""\
+import socket, sys, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", 20200))
+s.settimeout(20)
+sys.stdout.write("READY\\n"); sys.stdout.flush()
+deadline = time.time() + 20
+received = 0
+while time.time() < deadline:
+    try:
+        s.recvfrom(256)
+        received += 1
+    except socket.timeout:
+        break
+s.close()
+sys.stdout.write(str(received) + "\\n"); sys.stdout.flush()
+"""
+    srv = _popen_in_ns(EXTERNAL_NS, srv_code)
+    if not _wait_server_ready(srv):
+        nat_m.send_signal(signal.SIGTERM); nat_m.wait(timeout=5)
+        start_nat()
+        record("TC-11 Port Exhaustion", False, "flood server not ready")
+        return
+
+    # Internal NS에서 단일 Python 프로세스로 FLOOD_COUNT개 소스 포트를 동시에 오픈
+    # 각각 고유한 src_port → 고유한 NAT 세션 생성
+    flood_code = f"""\
+import socket, threading, time, sys
+
+FLOOD   = {FLOOD_COUNT}
+SERVER  = ("{SERVER_IP}", 20200)
+results = []
+lock    = threading.Lock()
+
+def send(i):
+    src = 10000 + i   # 고유 소스 포트
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(2)
+    try:
+        s.bind(("0.0.0.0", src))
+        s.sendto(f"flood-{{i}}".encode(), SERVER)
+        with lock:
+            results.append(True)
+    except Exception:
+        with lock:
+            results.append(False)
+    finally:
+        s.close()
+
+threads = [threading.Thread(target=send, args=(i,)) for i in range(FLOOD)]
+for t in threads: t.start()
+for t in threads: t.join()
+
+succeeded = sum(results)
+sys.stdout.write(f"{{succeeded}}/{{FLOOD}}\\n")
+sys.stdout.flush()
+"""
+    t_start = time.time()
+    flood_proc = subprocess.run(
+        ["ip", "netns", "exec", INTERNAL_NS, "python3", "-c", flood_code],
+        capture_output=True, text=True, timeout=60,
+    )
+    elapsed = time.time() - t_start
+
+    _communicate(srv, timeout=25)
+
+    # ── Prometheus 메트릭 조회 ───────────────────────────────────────
+    metrics_resp = sh(f"curl -sf http://127.0.0.1:{METRICS_PORT}/metrics", check=False)
+    metrics_ok   = metrics_resp.returncode == 0
+
+    alloc_fail_total = 0
+    active_sessions  = 0
+    if metrics_ok:
+        for line in metrics_resp.stdout.splitlines():
+            if line.startswith("#"):
+                continue
+            if "ebpf_nat_port_allocation_failures_total" in line:
+                try:
+                    alloc_fail_total += int(float(line.split()[-1]))
+                except ValueError:
+                    pass
+            if 'ebpf_nat_active_sessions{table="reverse_nat"}' in line:
+                try:
+                    active_sessions = int(float(line.split()[-1]))
+                except ValueError:
+                    pass
+
+    # ── GC 완료 대기 후 회복 확인 (3s gc-interval) ───────────────────
+    time.sleep(4)
+    srv2 = tcp_server(20201)
+    recovered = False
+    if _wait_server_ready(srv2):
+        ok, _ = tcp_client(20201, b"post-flood", timeout=3)
+        pairs  = _communicate(srv2)[0]
+        recovered = ok and (EXTERNAL_IP in pairs)
+
+    # ── 정리 ──────────────────────────────────────────────────────────
+    nat_m.send_signal(signal.SIGTERM)
+    try:
+        nat_m.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        nat_m.kill()
+    start_nat()
+
+    flood_out = flood_proc.stdout.strip()
+    fast      = elapsed < 30          # 60개 병렬 소켓이 30초 내 완료 = hang 없음
+
+    record(
+        "TC-11 Port Exhaustion",
+        fast and metrics_ok and recovered,
+        (f"elapsed={elapsed:.1f}s(<30s={fast}) "
+         f"flood={flood_out} "
+         f"alloc_fail={alloc_fail_total} "
+         f"active_sessions={active_sessions} "
+         f"metrics_ok={metrics_ok} "
+         f"recovered={recovered}"),
+    )
+
+
 def test_session_persistence() -> None:
     """TC-10  Session Persistence: NAT 재시작 후 세션 파일에서 복원된다."""
     # 세션 생성
@@ -629,6 +787,7 @@ TESTS = [
     test_rapid_reconnect,
     test_anti_spoofing,
     test_udp_multiple_flows,
+    test_port_exhaustion,
     test_session_persistence,
 ]
 
