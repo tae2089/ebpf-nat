@@ -5,31 +5,39 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 )
 
 // StartTracePipeLogger reads from /sys/kernel/debug/tracing/trace_pipe and logs to slog.
 // This requires root privileges and is intended for development/debug mode.
 func StartTracePipeLogger(ctx context.Context) {
 	tracePipe := "/sys/kernel/debug/tracing/trace_pipe"
-	
+
 	f, err := os.Open(tracePipe)
 	if err != nil {
-		slog.Warn("Failed to open trace_pipe. Debug logs from BPF will not be available.", 
+		slog.Warn("Failed to open trace_pipe. Debug logs from BPF will not be available.",
 			slog.Any("error", err))
 		return
 	}
-	defer f.Close()
+
+	var closeOnce sync.Once
+	closeFile := func() {
+		closeOnce.Do(func() {
+			if err := f.Close(); err != nil {
+				slog.Warn("Failed to close trace_pipe", slog.Any("error", err))
+			}
+		})
+	}
+	defer closeFile()
 
 	slog.Info("Started BPF trace_pipe logger", slog.String("path", tracePipe))
 
 	scanner := bufio.NewScanner(f)
-	
-	// Create a channel to handle context cancellation
-	done := make(chan struct{})
+
+	// ctx 취소 시 파일을 닫아 scanner.Scan()을 중단시킨다.
 	go func() {
 		<-ctx.Done()
-		f.Close() // This will break the scanner.Scan()
-		close(done)
+		closeFile()
 	}()
 
 	for scanner.Scan() {

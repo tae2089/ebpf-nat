@@ -185,7 +185,9 @@ func (m *Manager) LoadConfig(cfg *config.Config) error {
 			if err := m.updatePublicIP(context.Background()); err != nil {
 				slog.Error("Initial public IP detection failed, using private IP", slog.Any("error", err))
 				if privateIP != nil {
-					m.SetSNATConfig(privateIP, maxMSS)
+					if err2 := m.SetSNATConfig(privateIP, maxMSS); err2 != nil {
+						slog.Warn("Failed to set fallback SNAT config", slog.Any("error", err2))
+					}
 				}
 			}
 
@@ -435,22 +437,24 @@ func (m *Manager) SaveSessions(path string) error {
 	defer os.Remove(tmpFile) // Remove if we fail
 
 	if _, err := f.Write(snapshotBytes); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("failed to write session data: %w", err)
 	}
 
 	if len(trailer) > 0 {
 		if _, err := f.Write(trailer); err != nil {
-			f.Close()
+			_ = f.Close()
 			return fmt.Errorf("failed to write HMAC trailer: %w", err)
 		}
 	}
 
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("failed to sync temporary file: %w", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to close session file: %w", err)
+	}
 
 	if err := os.Rename(tmpFile, path); err != nil {
 		return fmt.Errorf("failed to rename session file: %w", err)

@@ -5,9 +5,12 @@ BUILDER_IMAGE=ebpf-nat-builder
 GOMODCACHE=$(shell go env GOMODCACHE 2>/dev/null || echo "$(shell pwd)/.go-cache/pkg/mod")
 GOCACHE=$(shell go env GOCACHE 2>/dev/null || echo "$(shell pwd)/.go-cache/go-build")
 
-.PHONY: all generate build test clean build-builder
+.PHONY: all generate build test lint clean build-builder
 
 all: generate build
+
+lint:
+	docker run --rm -v $(shell pwd):/app -w /app golangci/golangci-lint:latest golangci-lint run -v --timeout=5m
 
 build-builder:
 	docker build -t $(BUILDER_IMAGE) -f Dockerfile.ebpf .

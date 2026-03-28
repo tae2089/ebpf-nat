@@ -1,0 +1,28 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  exclusions:
+    rules:
+      # defer 문 뒤의 Close() 등 에러 무시 (줄 시작 공백 허용)
+      - linters:
+          - errcheck
+        source: '^\s*defer .*'
+
+      # 테스트 파일 내의 모든 errcheck 에러 무시
+      - linters:
+          - errcheck
+        path: '.*_test\.go'
+
+      # verifier_check는 테스트 용도이므로 CI에서 제외
+      - linters:
+          - errcheck
+        path: "cmd/verifier_check/"
+      - linters:
+          - errcheck
+        path: "internal/nat/test_env.go"

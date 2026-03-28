@@ -121,10 +121,6 @@ func TestRestoreSessions_FutureTimestampSkipped(t *testing.T) {
 // timeout 조건을 초과함으로써 세션이 "만료된 것"처럼 처리되지만,
 // 실제로는 미래 타임스탬프로 "아직 살아있는" 세션이 필터링되어야 한다.
 func TestRestoreSessionsAgeGuard_FutureTimestamp(t *testing.T) {
-	type entry struct {
-		lastSeenUnix int64
-	}
-
 	nowUnix := int64(1_000_000_000) // 1초 (nanoseconds)
 
 	tests := []struct {

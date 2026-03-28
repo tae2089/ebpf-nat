@@ -40,7 +40,10 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.Flags().StringVarP(&cfg.Interface, "interface", "i", "", "Network interface to attach eBPF (required)")
-	rootCmd.MarkFlagRequired("interface")
+	if err := rootCmd.MarkFlagRequired("interface"); err != nil {
+		slog.Error("Failed to mark interface flag as required", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	rootCmd.Flags().BoolVarP(&debug, "debug", "d", false, "Enable debug logging and BPF tracing")
 	rootCmd.Flags().BoolVarP(&cfg.Masquerade, "masquerade", "m", true, "Enable dynamic SNAT (masquerading)")

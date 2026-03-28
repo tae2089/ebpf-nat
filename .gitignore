@@ -15,3 +15,5 @@ bin/
 
 # Test logs
 *.log
+
+.omc

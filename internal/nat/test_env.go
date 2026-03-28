@@ -76,14 +76,12 @@ func (e *TestEnv) Setup(objs *bpf.NatObjects) error {
 	links := []string{"veth-int-root", "veth-ext-root"}
 	for _, l := range links {
 		path := fmt.Sprintf("/proc/sys/net/ipv4/conf/%s/rp_filter", l)
-		if err := os.WriteFile(path, []byte("0"), 0644); err != nil {
-			// Ignore error if interface not yet created
-		}
+		_ = os.WriteFile(path, []byte("0"), 0644) // Ignore error if interface not yet created
 		// Disable offloads to ensure BPF sees clean packets and checksums work
-		exec.Command("ethtool", "-K", l, "rx", "off", "tx", "off", "tso", "off", "gso", "off", "gro", "off").Run()
+		_ = exec.Command("ethtool", "-K", l, "rx", "off", "tx", "off", "tso", "off", "gso", "off", "gro", "off").Run()
 	}
 	// Enable proxy_arp on external interface
-	os.WriteFile("/proc/sys/net/ipv4/conf/veth-ext-root/proxy_arp", []byte("1"), 0644)
+	_ = os.WriteFile("/proc/sys/net/ipv4/conf/veth-ext-root/proxy_arp", []byte("1"), 0644)
 
 	// 4. Attach eBPF NAT only to the EXTERNAL interface
 	if e.objs != nil {
